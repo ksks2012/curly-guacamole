@@ -7,7 +7,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from utils.config import AppConfig
-from utils.file_processor import load_and_chunk_pdf
+from utils.file_processor import load_and_chunk_pdf, write_json
 
 # ---------------------------------------------------------------------------
 # RAG prompt: forces the model to cite sources and stay grounded in context.
@@ -118,7 +118,13 @@ class LocalLlamaClient:
         )
 
     def add_pdf(self, pdf_path: str, chunk_size: int = 500, chunk_overlap: int = 100):
-        """Loads a PDF, splits it into chunks with metadata, and indexes them in Chroma."""
+        """Loads a PDF, splits it into chunks with metadata, and indexes them in Chroma.
+
+        Uses run_indexing (via LangChain index()) as the single mechanism for adding
+        documents to the vector store. Chroma.from_documents must NOT be called here,
+        because it bypasses the record manager and causes duplicate documents to
+        accumulate on every run.
+        """
         try:
             chunks = load_and_chunk_pdf(
                 pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap
@@ -127,10 +133,6 @@ class LocalLlamaClient:
             print(f"Sample metadata: {chunks[0].metadata if chunks else 'n/a'}")
 
             self.run_indexing(chunks)
-
-            self.db = Chroma.from_documents(
-                chunks, embedding=self.embed, persist_directory=self.persist_directory
-            )
         except Exception as e:
             print(f"Error loading PDF: {e}")
 
@@ -161,6 +163,7 @@ class LocalLlamaClient:
                 cleanup="incremental",
                 source_id_key="source_id",
                 key_encoder="sha256",
+                batch_size=len(docs),  # process all at once (no batching) to avoid partial updates in case of errors
             )
             print(f"Indexing status: {indexing_stats}")
         except Exception as e:

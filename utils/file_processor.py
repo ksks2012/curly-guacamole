@@ -85,7 +85,17 @@ def load_and_chunk_pdf(
     chunks = splitter.split_documents(pages)
 
     for idx, chunk in enumerate(chunks):
-        chunk.metadata["source_id"] = filename
-        chunk.metadata["total_pages"] = total_pages
+        # Replace metadata entirely instead of appending to it.
+        # PyPDFLoader may inject PDF Info dict fields (title, author, modDate,
+        # creator, producer, etc.) whose types or encoding can vary between
+        # pypdf versions, causing non-deterministic content hashes in index().
+        chunk.metadata = {
+            "source": chunk.metadata.get("source", pdf_path),
+            "page": int(chunk.metadata.get("page", 0)),  # normalise to int
+            "filename": filename,
+            "total_pages": int(total_pages),
+            "source_id": filename,  # used by index() as the grouping key
+            "chunk_id": idx,
+        }
 
     return chunks
