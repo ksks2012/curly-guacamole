@@ -1,0 +1,10 @@
+embed_base: "http://localhost:8080/v1/"
+llm_base: "http://localhost:8080/v1/"
+embed_model: "text-embedding-ada-002"
+llm_model: "local-model"
+persist_directory: "./my_db"
+api_key: "sk-no-key-required"
+llm_kwargs: {}
+pdf_path: "./data/test.pdf"
+test_search: "test"
+test_query: "What are the main contents of this document?"
