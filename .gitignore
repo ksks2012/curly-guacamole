@@ -22,7 +22,6 @@ var/**
 .credentials/**
 *.png
 *.log
-*.txt
 *.db3
 *.sqlite
 *.sh
@@ -33,4 +32,4 @@ var/**
 # temp
 pkg/**
 bak/**
-my_db/**
+**/my_db*/**
