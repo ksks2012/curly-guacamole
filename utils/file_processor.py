@@ -1,5 +1,6 @@
 import csv
 import configparser
+import hashlib
 import json
 import os
 import pprint
@@ -84,8 +85,7 @@ def load_and_chunk_pdf(
     chunks = splitter.split_documents(pages)
 
     for idx, chunk in enumerate(chunks):
-        chunk.metadata["filename"] = filename
+        chunk.metadata["source_id"] = filename
         chunk.metadata["total_pages"] = total_pages
-        chunk.metadata["chunk_id"] = idx
 
     return chunks

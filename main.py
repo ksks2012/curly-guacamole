@@ -3,6 +3,8 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
+from langchain_classic.indexes import SQLRecordManager, index
+from langchain_core.documents import Document
 from utils.file_processor import read_yaml, load_and_chunk_pdf
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,8 @@ class LocalLlamaClient:
             **llm_kwargs
         )
 
+        self.setup_rag_collection(_config.get("setup_rag_collection", False), db_url=_config.get("db_url", "./my_db/record_manager_cache.sql"))
+
     def get_retriever(self, k: int = 5, fetch_k: int = 20):
         """
         Returns an MMR retriever.
@@ -109,10 +113,44 @@ class LocalLlamaClient:
             print(f"Loaded PDF: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
             print(f"Sample metadata: {chunks[0].metadata if chunks else 'n/a'}")
 
+            self.run_indexing(chunks)  # Index the actual chunks with metadata in Chroma
+
             self.db = Chroma.from_documents(chunks, embedding=self.embed, persist_directory=self.persist_directory)
         except Exception as e:
             print(f"Error loading PDF: {e}")
 
+    def setup_rag_collection(self, namespace: str = "rag_collection", db_url: str = "sqlite:///record_manager_cache.sql"):
+        try:
+            self.record_manager = SQLRecordManager(
+                namespace, db_url=db_url
+            )
+            if os.path.isfile(namespace) is False:
+                self.record_manager.create_schema()
+        except Exception as e:
+            print(f"Error setting up RAG collection: {e}")
+
+    def run_indexing(self, docs: list[Document]):
+        indexing_stats = {
+            'num_added': 0,
+            'num_updated': 0,
+            'num_skipped': 0,
+            'num_deleted': 0,
+        }
+
+        try:
+            indexing_stats = index(
+                docs_source=docs,
+                record_manager=self.record_manager,
+                vector_store=self.db,
+                cleanup="incremental",
+                source_id_key="source_id",
+                key_encoder="sha256",  # Use SHA256 hash of the source content as the unique ID
+            )
+            print(f"Indexing status: {indexing_stats}")
+        except Exception as e:
+            print(f"Error during indexing: {e}")
+
+        return indexing_stats
 
     def persist(self):
         """Force write to disk (newer Chroma versions auto-persist when persist_directory is set)."""
@@ -120,8 +158,7 @@ class LocalLlamaClient:
 
 def main():
     client = LocalLlamaClient()
-    # client.add_pdf(pdf_path)
-    docs = client.similarity_search(_config.get("test_search", "test"))
+    client.add_pdf(pdf_path)
     resp = client.answer_query(
         _config.get("test_query", "What are the main contents of this document?"),
         k=5,
