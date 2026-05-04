@@ -2,9 +2,7 @@ import os
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from utils.file_processor import read_yaml
+from utils.file_processor import read_yaml, load_and_chunk_pdf
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etc", "config.yaml")
 _config = read_yaml(_CONFIG_PATH)
@@ -65,17 +63,12 @@ class LocalLlamaClient:
         # fallback: use from_texts with persist (heavier operation)
         self.db = Chroma.from_texts(texts, embedding=self.embed, persist_directory=self.persist_directory)
 
-    def add_pdf(self, pdf_path):
-        """Loads a PDF and adds its content to Chroma."""
-        # Demonstrates the structure; use PyPDF2, pdfplumber, etc. for actual PDF parsing
+    def add_pdf(self, pdf_path: str, chunk_size: int = 500, chunk_overlap: int = 100):
+        """Loads a PDF, splits it into chunks with metadata, and indexes them in Chroma."""
         try:
-            loader = PyPDFLoader(pdf_path)
-            data = loader.load()
-            print(f"Loaded {len(data)} pages.")
-
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=400, chunk_overlap=50)
-            chunks = text_splitter.split_documents(data)
-            print(f"Created {len(chunks)} chunks.")
+            chunks = load_and_chunk_pdf(pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            print(f"Loaded PDF: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
+            print(f"Sample metadata: {chunks[0].metadata if chunks else 'n/a'}")
 
             self.db = Chroma.from_documents(chunks, embedding=self.embed, persist_directory=self.persist_directory)
         except Exception as e:
