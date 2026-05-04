@@ -42,19 +42,28 @@ class LocalLlamaClient:
             **llm_kwargs
         )
 
+    def get_retriever(self, k: int = 5, fetch_k: int = 20):
+        """
+        Returns an MMR retriever.
+          k       : number of documents returned to the LLM
+          fetch_k : candidate pool size before MMR re-ranking (larger = more diverse / slower)
+        """
+        return self.db.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": k, "fetch_k": fetch_k},
+        )
+
     def similarity_search(self, query: str, k: int = 4):
         """Returns a list of similar documents from Chroma (LangChain Document objects)."""
         return self.db.similarity_search(query, k=k)
 
-    def answer_query(self, query: str, k: int = 1):
-        """Uses retrieved documents as context to generate a response (simple prompt concatenation)."""
-        docs = self.similarity_search(query, k=k)
+    def answer_query(self, query: str, k: int = 5, fetch_k: int = 20):
+        """Uses MMR retrieval to fetch documents, then generates a response."""
+        retriever = self.get_retriever(k=k, fetch_k=fetch_k)
+        docs = retriever.invoke(query)
         context = "\n\n".join(d.page_content for d in docs)
         prompt = f"Answer based on the following information:\n{context}\n\nQuestion: {query}"
-        # Use invoke or __call__ depending on your ChatOpenAI implementation
-        if hasattr(self.llm, "invoke"):
-            return self.llm.invoke(prompt)
-        return self.llm(prompt)
+        return self.llm.invoke(prompt)
 
     def add_texts(self, texts, metadatas=None, ids=None):
         """Adds texts to Chroma (uses available Chroma API method)."""
@@ -81,9 +90,13 @@ class LocalLlamaClient:
 
 def main():
     client = LocalLlamaClient()
-    client.add_pdf(pdf_path)
+    # client.add_pdf(pdf_path)
     docs = client.similarity_search(_config.get("test_search", "test"))
-    resp = client.answer_query(_config.get("test_query", "What are the main contents of this document?"))
+    resp = client.answer_query(
+        _config.get("test_query", "What are the main contents of this document?"),
+        k=5,
+        fetch_k=20,
+    )
     print(resp)
 
 if __name__ == "__main__":
