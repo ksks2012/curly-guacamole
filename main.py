@@ -2,7 +2,28 @@ import os
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI
+from langchain_core.prompts import PromptTemplate
 from utils.file_processor import read_yaml, load_and_chunk_pdf
+
+# ---------------------------------------------------------------------------
+# RAG prompt: forces the model to cite sources and stay grounded in context.
+# {context} is pre-formatted with [page N / filename] tags per chunk.
+# {question} is the user query.
+# ---------------------------------------------------------------------------
+RAG_PROMPT = PromptTemplate.from_template("""\
+You are a document analysis assistant.
+
+Rules:
+- Answer ONLY using the provided context below.
+- If the answer is not in the context, say "I don't know based on the provided documents."
+- You MUST cite the source for every claim, e.g. [page 3, test.pdf].
+
+Context:
+{context}
+
+Question:
+{question}
+""")
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "etc", "config.yaml")
 _config = read_yaml(_CONFIG_PATH)
@@ -58,11 +79,20 @@ class LocalLlamaClient:
         return self.db.similarity_search(query, k=k)
 
     def answer_query(self, query: str, k: int = 5, fetch_k: int = 20):
-        """Uses MMR retrieval to fetch documents, then generates a response."""
+        """Uses MMR retrieval to fetch documents, then generates a citation-grounded response."""
         retriever = self.get_retriever(k=k, fetch_k=fetch_k)
         docs = retriever.invoke(query)
-        context = "\n\n".join(d.page_content for d in docs)
-        prompt = f"Answer based on the following information:\n{context}\n\nQuestion: {query}"
+
+        # Build context blocks with source tags so the LLM can cite them
+        context_blocks = []
+        for doc in docs:
+            page = doc.metadata.get("page", "?")  # 0-based page from PyPDFLoader
+            filename = doc.metadata.get("filename", "unknown")
+            tag = f"[page {page + 1}, {filename}]"  # convert to 1-based for display
+            context_blocks.append(f"{tag}\n{doc.page_content}")
+        context = "\n\n".join(context_blocks)
+
+        prompt = RAG_PROMPT.format(context=context, question=query)
         return self.llm.invoke(prompt)
 
     def add_texts(self, texts, metadatas=None, ids=None):
