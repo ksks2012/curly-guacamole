@@ -76,6 +76,18 @@ class AppConfig:
         """Cross-encoder model name (only used when reranker_type='cross_encoder')."""
         return self._data.get("reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
+    # --- Query expansion ---
+
+    @property
+    def query_expansion_enabled(self) -> bool:
+        """When True, answer_query generates extra query phrasings before retrieval."""
+        return bool(self._data.get("query_expansion_enabled", False))
+
+    @property
+    def query_expansion_n(self) -> int:
+        """Number of extra phrasings to generate (total candidates = n+1 including original)."""
+        return int(self._data.get("query_expansion_n", 3))
+
     # --- Auth ---
 
     @property

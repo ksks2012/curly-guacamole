@@ -1,34 +1,20 @@
+import json
 import os
 
 from langchain_chroma import Chroma
 from langchain_classic.indexes import SQLRecordManager, index
 from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
 from rag.reranker import BaseReranker, CrossEncoderReranker, LLMReranker
+from rag.prompt import RAG_PROMPT, QUERY_EXPANSION_PROMPT
 
 # ---------------------------------------------------------------------------
-# RAG prompt: forces the model to cite sources and stay grounded in context.
-# {context} is pre-formatted with [page N, filename] tags per chunk.
-# {question} is the user query.
+# All prompt templates live in rag/prompt.py.
+# RAG_PROMPT and QUERY_EXPANSION_PROMPT are imported from there.
 # ---------------------------------------------------------------------------
-RAG_PROMPT = PromptTemplate.from_template("""\
-You are a document analysis assistant.
-
-Rules:
-- Answer ONLY using the provided context below.
-- If the answer is not in the context, say "I don't know based on the provided documents."
-- You MUST cite the source for every claim, e.g. [page 3, test.pdf].
-
-Context:
-{context}
-
-Question:
-{question}
-""")
 
 
 class LocalLlamaClient:
@@ -121,18 +107,72 @@ class LocalLlamaClient:
     # Generation
     # ------------------------------------------------------------------
 
-    def answer_query(self, query: str, k: int = 5, fetch_k: int = 20, doc_id: str | None = None):
-        """Uses MMR retrieval + optional reranking to fetch documents, then generates a response.
+    def _expand_query(self, query: str, n: int) -> list[str]:
+        """Returns n alternative phrasings of query using QUERY_EXPANSION_PROMPT.
+
+        Falls back to an empty list so the caller can always safely combine
+        results with the original query.
+        """
+        prompt = QUERY_EXPANSION_PROMPT.format(question=query, n=n)
+        try:
+            response = self.llm.invoke(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+            expanded = json.loads(raw.strip())
+            if isinstance(expanded, list):
+                return [str(q) for q in expanded]
+        except Exception as e:
+            print(f"[query_expansion] failed, using original query only: {e}")
+        return []
+
+    def answer_query(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 20,
+        doc_id: str | None = None,
+        expand_query: bool | None = None,
+    ):
+        """Retrieves documents and generates a citation-grounded response.
 
         Pipeline:
-          vector search (fetch_k candidates via MMR)
-           → reranker  (narrows down to k docs when enabled)
-           → LLM generation with citation-grounded prompt
-        """
-        retriever = self.get_retriever(k=fetch_k, fetch_k=fetch_k, doc_id=doc_id)
-        candidates = retriever.invoke(query)
+          [optional] query expansion  → N extra phrasings via LLM
+           ↓
+          vector search per phrasing  (fetch_k candidates each, via MMR)
+           ↓
+          de-duplicate by chunk_id
+           ↓
+          reranker                    (narrows down to k docs when enabled)
+           ↓
+          LLM generation
 
-        # Re-rank candidates then keep top k
+        expand_query : override config.query_expansion_enabled for this call.
+        """
+        # Resolve expansion flag: per-call override wins, else use config
+        use_expansion = (
+            expand_query
+            if expand_query is not None
+            else self.config.query_expansion_enabled
+        )
+
+        if use_expansion:
+            extra_queries = self._expand_query(query, n=self.config.query_expansion_n)
+        else:
+            extra_queries = []
+
+        all_queries = [query] + extra_queries
+
+        # Retrieve candidates for every phrasing and de-duplicate by chunk_id
+        seen_ids: set[int] = set()
+        candidates: list[Document] = []
+        retriever = self.get_retriever(k=fetch_k, fetch_k=fetch_k, doc_id=doc_id)
+        for q in all_queries:
+            for doc in retriever.invoke(q):
+                chunk_id = doc.metadata.get("chunk_id", id(doc))
+                if chunk_id not in seen_ids:
+                    seen_ids.add(chunk_id)
+                    candidates.append(doc)
+
+        # Re-rank then keep top k
         if self.reranker is not None:
             docs = self.reranker.rerank(query, candidates, top_k=k)
         else:
