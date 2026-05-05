@@ -56,6 +56,14 @@ class AppConfig:
     def setup_rag_collection(self):
         return self._data.get("setup_rag_collection", False)
 
+    @property
+    def batch_limit(self) -> int:
+        """Batch size limit used when indexing or writing to the vector store.
+
+        Defaults to 256; override in `etc/config.yaml` with an integer value.
+        """
+        return int(self._data.get("batch_limit", 256))
+
     # --- Auth ---
 
     @property

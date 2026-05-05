@@ -37,6 +37,9 @@ class LocalLlamaClient:
     """
 
     def __init__(self, config: AppConfig):
+        # keep config for runtime settings
+        self.config = config
+
         # Embedding: points to your embedding server (llama.cpp server)
         self.embed = OpenAIEmbeddings(
             openai_api_key=config.api_key,
@@ -148,7 +151,7 @@ class LocalLlamaClient:
         except Exception as e:
             print(f"Error setting up RAG collection: {e}")
 
-    def run_indexing(self, docs: list[Document]):
+    def run_indexing(self, docs: list[Document], batch_limit: int = 100):
         indexing_stats = {
             "num_added": 0,
             "num_updated": 0,
@@ -156,14 +159,26 @@ class LocalLlamaClient:
             "num_deleted": 0,
         }
         try:
+            # Resolve batch_limit from argument or client config
+            if batch_limit is None:
+                batch_limit = getattr(self, "config", None) and getattr(self.config, "batch_limit", 100) or 100
+
+            if len(docs) > batch_limit:
+                cleanup_config = "scoped_ids"
+                # use a conservative batch size when scoped cleanup is used
+                batch_size_config = min(100, batch_limit)
+            else:
+                cleanup_config = "incremental"
+                batch_size_config = max(1, len(docs))
+
             indexing_stats = index(
                 docs_source=docs,
                 record_manager=self.record_manager,
                 vector_store=self.db,
-                cleanup="incremental",
+                cleanup=cleanup_config,
                 source_id_key="source_id",
                 key_encoder="sha256",
-                batch_size=len(docs),  # process all at once (no batching) to avoid partial updates in case of errors
+                batch_size=batch_size_config,  # use the configured batch size
             )
             print(f"Indexing status: {indexing_stats}")
         except Exception as e:
