@@ -6,3 +6,4 @@ langchain
 chromadb
 pypdf
 pyyaml
+sentence-transformers
