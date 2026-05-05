@@ -62,21 +62,26 @@ def load_and_chunk_pdf(
     pdf_path: str,
     chunk_size: int = 500,
     chunk_overlap: int = 100,
+    doc_id: str | None = None,
 ) -> List[Document]:
     """
     Loads a PDF and splits it into chunks with enriched metadata.
 
     Each chunk carries:
-      - source     : absolute path of the PDF (set by PyPDFLoader)
+      - source      : absolute path of the PDF (set by PyPDFLoader)
       - page        : 0-based page number (set by PyPDFLoader)
       - filename    : basename of the PDF file
       - total_pages : total number of pages in the PDF
+      - source_id   : grouping key used by LangChain index() for incremental cleanup
+      - doc_id      : caller-supplied identifier for document-level filtering;
+                      defaults to filename when not provided
       - chunk_id    : sequential index across all chunks (0-based)
     """
     loader = PyPDFLoader(pdf_path)
     pages = loader.load()
     total_pages = len(pages)
     filename = os.path.basename(pdf_path)
+    resolved_doc_id = doc_id if doc_id is not None else filename
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -94,7 +99,8 @@ def load_and_chunk_pdf(
             "page": int(chunk.metadata.get("page", 0)),  # normalise to int
             "filename": filename,
             "total_pages": int(total_pages),
-            "source_id": filename,  # used by index() as the grouping key
+            "source_id": resolved_doc_id,  # used by index() as the grouping key
+            "doc_id": resolved_doc_id,      # used for retrieval-time filtering
             "chunk_id": idx,
         }
 

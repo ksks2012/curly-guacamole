@@ -71,28 +71,35 @@ class LocalLlamaClient:
     # Retrieval
     # ------------------------------------------------------------------
 
-    def get_retriever(self, k: int = 5, fetch_k: int = 20):
+    def get_retriever(self, k: int = 5, fetch_k: int = 20, doc_id: str | None = None):
         """
         Returns an MMR retriever.
           k       : number of documents returned to the LLM
           fetch_k : candidate pool size before MMR re-ranking (larger = more diverse / slower)
+          doc_id  : when provided, restricts retrieval to chunks from that document
         """
+        search_kwargs: dict = {"k": k, "fetch_k": fetch_k}
+        if doc_id is not None:
+            search_kwargs["filter"] = {"doc_id": doc_id}
         return self.db.as_retriever(
             search_type="mmr",
-            search_kwargs={"k": k, "fetch_k": fetch_k},
+            search_kwargs=search_kwargs,
         )
 
-    def similarity_search(self, query: str, k: int = 4):
+    def similarity_search(self, query: str, k: int = 4, doc_id: str | None = None):
         """Returns a list of similar documents from Chroma (LangChain Document objects)."""
-        return self.db.similarity_search(query, k=k)
+        kwargs: dict = {"k": k}
+        if doc_id is not None:
+            kwargs["filter"] = {"doc_id": doc_id}
+        return self.db.similarity_search(query, **kwargs)
 
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------
 
-    def answer_query(self, query: str, k: int = 5, fetch_k: int = 20):
+    def answer_query(self, query: str, k: int = 5, fetch_k: int = 20, doc_id: str | None = None):
         """Uses MMR retrieval to fetch documents, then generates a citation-grounded response."""
-        retriever = self.get_retriever(k=k, fetch_k=fetch_k)
+        retriever = self.get_retriever(k=k, fetch_k=fetch_k, doc_id=doc_id)
         docs = retriever.invoke(query)
 
         # Build context blocks with source tags so the LLM can cite them
@@ -120,9 +127,17 @@ class LocalLlamaClient:
             texts, embedding=self.embed, persist_directory=self.persist_directory
         )
 
-    def add_pdf(self, pdf_path: str, chunk_size: int = 500, chunk_overlap: int = 100):
+    def add_pdf(
+        self,
+        pdf_path: str,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
+        doc_id: str | None = None,
+    ):
         """Loads a PDF, splits it into chunks with metadata, and indexes them in Chroma.
 
+        doc_id  : identifier stored in chunk metadata for retrieval-time filtering;
+                  defaults to the PDF filename when not provided.
         Uses run_indexing (via LangChain index()) as the single mechanism for adding
         documents to the vector store. Chroma.from_documents must NOT be called here,
         because it bypasses the record manager and causes duplicate documents to
@@ -130,7 +145,7 @@ class LocalLlamaClient:
         """
         try:
             chunks = load_and_chunk_pdf(
-                pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, doc_id=doc_id
             )
             print(f"Loaded PDF: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
             print(f"Sample metadata: {chunks[0].metadata if chunks else 'n/a'}")
