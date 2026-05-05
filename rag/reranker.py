@@ -1,0 +1,133 @@
+"""
+Reranker module.
+
+Pipeline:
+    query
+     ↓
+    vector search (top fetch_k candidates)
+     ↓
+    reranker  ← this module
+     ↓
+    top k docs  → LLM
+
+Two concrete implementations are provided:
+  - CrossEncoderReranker  : uses a sentence-transformers cross-encoder model (local, fast)
+  - LLMReranker           : asks the LLM to score each candidate (no extra model needed)
+
+Both inherit from BaseReranker so they can be swapped out transparently.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+from langchain_core.documents import Document
+
+if TYPE_CHECKING:
+    from langchain_openai import ChatOpenAI
+
+
+class BaseReranker(ABC):
+    """Abstract reranker. Subclasses must implement `rerank`."""
+
+    @abstractmethod
+    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+        """Return the top_k most relevant documents, best-first."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Cross-encoder reranker (sentence-transformers)
+# ---------------------------------------------------------------------------
+
+class CrossEncoderReranker(BaseReranker):
+    """
+    Reranker backed by a sentence-transformers cross-encoder model.
+
+    Requires:  pip install sentence-transformers
+    Default model: cross-encoder/ms-marco-MiniLM-L-6-v2
+      - ~66 MB, good balance of speed and quality
+      - Swap for 'cross-encoder/ms-marco-electra-base' for higher quality
+    """
+
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+        try:
+            from sentence_transformers import CrossEncoder  # type: ignore
+        except ImportError as exc:
+            raise ImportError(
+                "sentence-transformers is required for CrossEncoderReranker. "
+                "Install it with: pip install sentence-transformers"
+            ) from exc
+
+        self.model = CrossEncoder(model_name)
+
+    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+        if not docs:
+            return []
+
+        pairs = [(query, doc.page_content) for doc in docs]
+        scores = self.model.predict(pairs)  # returns numpy array of floats
+
+        ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+        return [doc for _, doc in ranked[:top_k]]
+
+
+# ---------------------------------------------------------------------------
+# LLM reranker (no extra model — uses the existing ChatOpenAI instance)
+# ---------------------------------------------------------------------------
+
+_LLM_RERANK_PROMPT = """\
+You are a relevance judge. Given a query and a list of document excerpts, \
+score each excerpt on its relevance to the query on a scale of 0 to 10 \
+(10 = perfectly relevant, 0 = completely irrelevant).
+
+Query: {query}
+
+Documents:
+{docs_block}
+
+Reply ONLY with a JSON array of integers in the same order as the documents, \
+e.g. [8, 3, 9, 1].  Do not include any other text.
+"""
+
+
+class LLMReranker(BaseReranker):
+    """
+    Reranker that asks the LLM to score each candidate document.
+
+    No additional dependencies required; reuses the ChatOpenAI instance
+    that is already wired into LocalLlamaClient.
+
+    Trade-off: slightly slower (one extra LLM call per query) but works with
+    any model and can leverage semantic understanding beyond embedding space.
+    """
+
+    def __init__(self, llm: "ChatOpenAI"):
+        self.llm = llm
+
+    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+        if not docs:
+            return []
+
+        docs_block = "\n\n".join(
+            f"[{i}] {doc.page_content[:400]}" for i, doc in enumerate(docs)
+        )
+        prompt = _LLM_RERANK_PROMPT.format(query=query, docs_block=docs_block)
+
+        try:
+            import json
+            response = self.llm.invoke(prompt)
+            raw = response.content if hasattr(response, "content") else str(response)
+            scores = json.loads(raw.strip())
+
+            if not isinstance(scores, list) or len(scores) != len(docs):
+                raise ValueError("Unexpected response shape from LLM reranker")
+
+            ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+            return [doc for _, doc in ranked[:top_k]]
+
+        except Exception as e:
+            # Fallback: return first top_k docs unchanged if LLM response is unparseable
+            print(f"[LLMReranker] fallback to original order due to: {e}")
+            return docs[:top_k]

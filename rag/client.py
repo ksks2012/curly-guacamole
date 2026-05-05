@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
+from rag.reranker import BaseReranker, CrossEncoderReranker, LLMReranker
 
 # ---------------------------------------------------------------------------
 # RAG prompt: forces the model to cite sources and stay grounded in context.
@@ -67,6 +68,29 @@ class LocalLlamaClient:
             db_url=config.db_url,
         )
 
+        # Reranker: built once and reused for every answer_query call.
+        # LLMReranker is handled after self.llm is available.
+        if config.reranker_type == "llm":
+            self.reranker: BaseReranker | None = LLMReranker(self.llm)
+        else:
+            self.reranker = self._build_reranker(config)
+
+    # ------------------------------------------------------------------
+    # Retrieval
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_reranker(config: AppConfig) -> BaseReranker | None:
+        """Instantiate the configured reranker, or return None when disabled."""
+        kind = config.reranker_type
+        if kind == "cross_encoder":
+            return CrossEncoderReranker(model_name=config.reranker_model)
+        if kind == "llm":
+            # LLMReranker needs the ChatOpenAI instance; defer init to first use
+            # by storing config and building lazily inside answer_query.
+            return None  # replaced in __init__ after llm is available
+        return None  # 'none' or unknown → reranking disabled
+
     # ------------------------------------------------------------------
     # Retrieval
     # ------------------------------------------------------------------
@@ -98,9 +122,21 @@ class LocalLlamaClient:
     # ------------------------------------------------------------------
 
     def answer_query(self, query: str, k: int = 5, fetch_k: int = 20, doc_id: str | None = None):
-        """Uses MMR retrieval to fetch documents, then generates a citation-grounded response."""
-        retriever = self.get_retriever(k=k, fetch_k=fetch_k, doc_id=doc_id)
-        docs = retriever.invoke(query)
+        """Uses MMR retrieval + optional reranking to fetch documents, then generates a response.
+
+        Pipeline:
+          vector search (fetch_k candidates via MMR)
+           → reranker  (narrows down to k docs when enabled)
+           → LLM generation with citation-grounded prompt
+        """
+        retriever = self.get_retriever(k=fetch_k, fetch_k=fetch_k, doc_id=doc_id)
+        candidates = retriever.invoke(query)
+
+        # Re-rank candidates then keep top k
+        if self.reranker is not None:
+            docs = self.reranker.rerank(query, candidates, top_k=k)
+        else:
+            docs = candidates[:k]
 
         # Build context blocks with source tags so the LLM can cite them
         context_blocks = []

@@ -64,6 +64,18 @@ class AppConfig:
         """
         return int(self._data.get("batch_limit", 256))
 
+    # --- Reranker ---
+
+    @property
+    def reranker_type(self) -> str:
+        """Which reranker to use: 'cross_encoder', 'llm', or 'none'."""
+        return self._data.get("reranker_type", "cross_encoder")
+
+    @property
+    def reranker_model(self) -> str:
+        """Cross-encoder model name (only used when reranker_type='cross_encoder')."""
+        return self._data.get("reranker_model", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
     # --- Auth ---
 
     @property
