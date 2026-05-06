@@ -19,10 +19,13 @@ Both inherit from BaseReranker so they can be swapped out transparently.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
@@ -66,7 +69,17 @@ class CrossEncoderReranker(BaseReranker):
                 "Install it with: pip install sentence-transformers"
             ) from exc
 
-        self.model = CrossEncoder(model_name)
+        # Prefer local cache to avoid unnecessary network round-trips.
+        # Fall back to downloading only when the model is not cached yet.
+        try:
+            self.model = CrossEncoder(model_name, local_files_only=True)
+            log.debug("CrossEncoder loaded from local cache: %s", model_name)
+        except Exception:
+            log.info(
+                "CrossEncoder cache miss for %s — downloading from hub (first run only)",
+                model_name,
+            )
+            self.model = CrossEncoder(model_name)
 
     def rerank_with_scores(
         self, query: str, docs: list[Document], top_k: int
