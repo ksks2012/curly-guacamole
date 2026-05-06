@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
+from utils.config import AppConfig
 
 log = logging.getLogger(__name__)
 
@@ -154,3 +155,29 @@ class LLMReranker(BaseReranker):
             # Fallback: return first top_k docs unchanged if LLM response is unparseable
             print(f"[LLMReranker] fallback to original order due to: {e}")
             return [(doc, 0.0) for doc in docs[:top_k]]
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+class RerankerFactory:
+    """Instantiates the configured reranker without exposing construction details."""
+
+    @staticmethod
+    def build(config: "AppConfig", llm=None) -> "BaseReranker | None":
+        """Return the appropriate BaseReranker, or None when reranking is disabled.
+
+        Args:
+            config : AppConfig — reads reranker_type and reranker_model.
+            llm    : ChatOpenAI instance, required only when reranker_type == 'llm'.
+        """
+        kind = config.reranker_type
+        if kind == "cross_encoder":
+            return CrossEncoderReranker(model_name=config.reranker_model)
+        if kind == "llm":
+            if llm is None:
+                raise ValueError("LLMReranker requires an llm instance; pass llm= to build()")
+            return LLMReranker(llm)
+        # 'none' or unrecognised → reranking disabled
+        return None
