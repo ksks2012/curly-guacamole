@@ -35,7 +35,7 @@ from nicegui import ui
 from utils.config import AppConfig
 from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
-from search_controller import RERANKER_UNAVAILABLE, SearchController
+from ui.search_controller import RERANKER_UNAVAILABLE, SearchController
 
 # ---------------------------------------------------------------------------
 # Bootstrap: config → logging → client → controller
