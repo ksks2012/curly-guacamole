@@ -116,7 +116,8 @@ def dashboard():
 
         # ── Body ──────────────────────────────────────────────────────────
         with ui.row().style(
-            "flex: 1; min-height: 0; gap: 0.75rem; padding: 0.75rem; overflow: hidden;"
+            "flex: 1; min-height: 0; gap: 0.75rem; padding: 0.75rem;"
+            " overflow: hidden; align-items: stretch;"
         ):
             # Left / center — result columns
             @ui.refreshable
@@ -125,101 +126,58 @@ def dashboard():
                 reranked = _ctrl.reranked_results
                 reranked_ids = _ctrl.reranked_chunk_ids
 
-                # ── Vector column ──────────────────────────────────────────
-                with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
-                    header = f"VECTOR  ({len(vector)})"
-                    if reranked_ids:
-                        header += f"  ·  {len(reranked_ids)} passed rerank"
-                    ui.label(header).classes(
-                        "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2"
-                    )
-
-                    if not vector:
-                        ui.label("Results will appear after search.").classes(
-                            "text-gray-400 italic text-sm"
-                        )
-                    else:
-                        for v_rank, (doc, vscore) in enumerate(vector):
-                            chunk_id = doc.metadata.get("chunk_id", "?")
-                            page = doc.metadata.get("page", "?")
-                            filename = doc.metadata.get("filename", "?")
-                            preview = doc.page_content[:180].replace("\n", " ")
-                            in_reranked = chunk_id in reranked_ids
-                            border = (
-                                "border-l-4 border-blue-300"
-                                if in_reranked
-                                else "border-l-4 border-transparent"
-                            )
-                            page_str = str(int(page) + 1) if page != "?" else "?"
-
-                            with ui.card().classes(
-                                f"w-full cursor-pointer hover:shadow-md mb-1 {border}"
-                            ).on(
-                                "click",
-                                lambda d=doc, s=vscore: (
-                                    _ctrl.select_chunk(d, s, "vscore"),
-                                    render_detail.refresh(),
-                                ),
-                            ):
-                                with ui.row().classes("items-center gap-2 flex-wrap"):
-                                    ui.label(f"#{v_rank + 1}").classes(
-                                        "text-xs font-bold w-5 text-gray-400"
-                                    )
-                                    ui.label(f"{vscore}").classes(
-                                        f"font-mono text-xs font-semibold"
-                                        f" {SearchController.score_color(vscore)}"
-                                    )
-                                    ui.label(f"p{page_str}").classes("text-gray-400 text-xs")
-                                    ui.label(f"c{chunk_id}").classes("text-gray-400 text-xs")
-                                    ui.label(filename).classes(
-                                        "text-blue-400 text-xs truncate max-w-[9rem]"
-                                    )
-                                ui.label(
-                                    preview + ("…" if len(doc.page_content) > 180 else "")
-                                ).classes("text-xs text-gray-600 leading-snug mt-0.5")
-
-                # ── Reranked column (only when rerank is ON) ───────────────
-                if rerank_on:
+                # Explicit flex-row wrapper so the two result columns have a
+                # bounded height context and overflow-y: auto works correctly.
+                # (The @ui.refreshable wrapper div has no height constraint on
+                # its own; this inner div inherits height via align-items:stretch
+                # from the parent body row.)
+                with ui.element("div").style(
+                    "display: flex; flex-direction: row; height: 100%;"
+                    " gap: 0.75rem; overflow: hidden; flex: 1;"
+                ):
+                    # ── Vector column ──────────────────────────────────────────
                     with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
-                        count = len(reranked) if reranked else 0
-                        ui.label(f"RERANKED  ({count})").classes(
+                        header = f"VECTOR  ({len(vector)})"
+                        if reranked_ids:
+                            header += f"  ·  {len(reranked_ids)} passed rerank"
+                        ui.label(header).classes(
                             "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2"
                         )
 
-                        if not reranked:
-                            ui.label("No rerank results.").classes(
+                        if not vector:
+                            ui.label("Results will appear after search.").classes(
                                 "text-gray-400 italic text-sm"
                             )
                         else:
-                            for r_rank, (doc, rscore) in enumerate(reranked):
+                            for v_rank, (doc, vscore) in enumerate(vector):
                                 chunk_id = doc.metadata.get("chunk_id", "?")
                                 page = doc.metadata.get("page", "?")
                                 filename = doc.metadata.get("filename", "?")
                                 preview = doc.page_content[:180].replace("\n", " ")
-                                change_label, change_color = SearchController.rank_change(
-                                    chunk_id, vector, r_rank
+                                in_reranked = chunk_id in reranked_ids
+                                border = (
+                                    "border-l-4 border-blue-300"
+                                    if in_reranked
+                                    else "border-l-4 border-transparent"
                                 )
                                 page_str = str(int(page) + 1) if page != "?" else "?"
 
                                 with ui.card().classes(
-                                    "w-full cursor-pointer hover:shadow-md mb-1"
-                                    " border-l-4 border-green-300"
+                                    f"w-full cursor-pointer hover:shadow-md mb-1 {border}"
                                 ).on(
                                     "click",
-                                    lambda d=doc, s=rscore: (
-                                        _ctrl.select_chunk(d, s, "rscore"),
+                                    lambda d=doc, s=vscore: (
+                                        _ctrl.select_chunk(d, s, "vscore"),
                                         render_detail.refresh(),
                                     ),
                                 ):
                                     with ui.row().classes("items-center gap-2 flex-wrap"):
-                                        ui.label(f"#{r_rank + 1}").classes(
-                                            "text-xs font-bold w-5 text-gray-700"
+                                        ui.label(f"#{v_rank + 1}").classes(
+                                            "text-xs font-bold w-5 text-gray-400"
                                         )
-                                        ui.label(change_label).classes(
-                                            f"text-xs font-mono {change_color} w-7"
-                                        )
-                                        ui.label(f"{rscore:.2f}").classes(
-                                            "font-mono text-xs font-semibold text-purple-600"
+                                        ui.label(f"{vscore}").classes(
+                                            f"font-mono text-xs font-semibold"
+                                            f" {SearchController.score_color(vscore)}"
                                         )
                                         ui.label(f"p{page_str}").classes("text-gray-400 text-xs")
                                         ui.label(f"c{chunk_id}").classes("text-gray-400 text-xs")
@@ -229,6 +187,58 @@ def dashboard():
                                     ui.label(
                                         preview + ("…" if len(doc.page_content) > 180 else "")
                                     ).classes("text-xs text-gray-600 leading-snug mt-0.5")
+
+                    # ── Reranked column (only when rerank is ON) ───────────────
+                    if rerank_on:
+                        with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
+                            count = len(reranked) if reranked else 0
+                            ui.label(f"RERANKED  ({count})").classes(
+                                "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2"
+                            )
+
+                            if not reranked:
+                                ui.label("No rerank results.").classes(
+                                    "text-gray-400 italic text-sm"
+                                )
+                            else:
+                                for r_rank, (doc, rscore) in enumerate(reranked):
+                                    chunk_id = doc.metadata.get("chunk_id", "?")
+                                    page = doc.metadata.get("page", "?")
+                                    filename = doc.metadata.get("filename", "?")
+                                    preview = doc.page_content[:180].replace("\n", " ")
+                                    change_label, change_color = SearchController.rank_change(
+                                        chunk_id, vector, r_rank
+                                    )
+                                    page_str = str(int(page) + 1) if page != "?" else "?"
+
+                                    with ui.card().classes(
+                                        "w-full cursor-pointer hover:shadow-md mb-1"
+                                        " border-l-4 border-green-300"
+                                    ).on(
+                                        "click",
+                                        lambda d=doc, s=rscore: (
+                                            _ctrl.select_chunk(d, s, "rscore"),
+                                            render_detail.refresh(),
+                                        ),
+                                    ):
+                                        with ui.row().classes("items-center gap-2 flex-wrap"):
+                                            ui.label(f"#{r_rank + 1}").classes(
+                                                "text-xs font-bold w-5 text-gray-700"
+                                            )
+                                            ui.label(change_label).classes(
+                                                f"text-xs font-mono {change_color} w-7"
+                                            )
+                                            ui.label(f"{rscore:.2f}").classes(
+                                                "font-mono text-xs font-semibold text-purple-600"
+                                            )
+                                            ui.label(f"p{page_str}").classes("text-gray-400 text-xs")
+                                            ui.label(f"c{chunk_id}").classes("text-gray-400 text-xs")
+                                            ui.label(filename).classes(
+                                                "text-blue-400 text-xs truncate max-w-[9rem]"
+                                            )
+                                        ui.label(
+                                            preview + ("…" if len(doc.page_content) > 180 else "")
+                                        ).classes("text-xs text-gray-600 leading-snug mt-0.5")
 
             render_results(False)
 
