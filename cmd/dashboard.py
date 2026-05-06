@@ -73,6 +73,7 @@ def dashboard():
             ui.label("RAG Debug Dashboard").classes(
                 "text-lg font-bold text-gray-800 mb-2"
             )
+            # Row 1: search controls
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                 query_input = ui.input(
                     placeholder="Enter your query…"
@@ -113,6 +114,50 @@ def dashboard():
                 )
 
             query_input.on("keydown.enter", do_search)
+
+            # Row 2: filter controls
+            with ui.row().classes("w-full items-center gap-3 flex-wrap mt-2"):
+                filter_toggle = ui.checkbox("Filter by doc")
+
+                # Fetch available doc_ids once at page-load time
+                _doc_ids = _ctrl.list_doc_ids()
+                filter_select = ui.select(
+                    options=_doc_ids,
+                    label="source doc",
+                    value=_doc_ids[0] if _doc_ids else None,
+                ).classes("w-64").props("outlined dense")
+                filter_select.set_visibility(False)
+
+                @ui.refreshable
+                def render_filter_status():
+                    active = _ctrl.filter_doc_id
+                    if active:
+                        ui.label(f"Filter: doc_id = {active}").classes(
+                            "text-xs font-mono bg-blue-50 text-blue-700"
+                            " border border-blue-200 rounded px-2 py-0.5"
+                        )
+                    else:
+                        ui.label("Filter: off — searching all documents").classes(
+                            "text-xs text-gray-400 italic"
+                        )
+
+                render_filter_status()
+
+                def on_filter_toggle(enabled: bool):
+                    filter_select.set_visibility(enabled)
+                    if enabled:
+                        _ctrl.set_filter(filter_select.value)
+                    else:
+                        _ctrl.set_filter(None)
+                    render_filter_status.refresh()
+
+                def on_filter_select(doc_id: str):
+                    if filter_toggle.value:
+                        _ctrl.set_filter(doc_id)
+                        render_filter_status.refresh()
+
+                filter_toggle.on_value_change(lambda e: on_filter_toggle(e.value))
+                filter_select.on_value_change(lambda e: on_filter_select(e.value))
 
         # ── Body ──────────────────────────────────────────────────────────
         with ui.row().style(

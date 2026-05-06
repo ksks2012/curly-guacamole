@@ -127,6 +127,20 @@ class LocalLlamaClient:
         # Convert L2 distance → relevance score in [0, 1]
         return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
 
+    def list_doc_ids(self) -> list[str]:
+        """Return all distinct doc_id values stored in the Chroma collection.
+
+        Fetches only metadata (no vectors or documents) so it is lightweight.
+        Used by the dashboard filter dropdown.
+        """
+        result = self.db.get(include=["metadatas"])
+        ids = {
+            m.get("source")
+            for m in (result.get("metadatas") or [])
+            if m and m.get("source")
+        }
+        return sorted(ids)
+
     def search_for_debug(
         self,
         query: str,

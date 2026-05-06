@@ -34,6 +34,7 @@ class SearchController:
         self._vector: list[tuple[Document, float]] = []
         self._reranked: list[tuple[Document, float]] | None = None
         self._metadata: dict = {}
+        self._filter_doc_id: str | None = None  # None = no filter (search all)
 
     # ------------------------------------------------------------------
     # Read-only state accessors
@@ -55,6 +56,11 @@ class SearchController:
     def reranked_chunk_ids(self) -> set:
         """Set of chunk_ids present in the reranked result list."""
         return {doc.metadata.get("chunk_id") for doc, _ in (self._reranked or [])}
+
+    @property
+    def filter_doc_id(self) -> str | None:
+        """Active doc_id filter, or None when filtering is disabled."""
+        return self._filter_doc_id
 
     # ------------------------------------------------------------------
     # Actions (state mutations)
@@ -80,8 +86,8 @@ class SearchController:
             return "Query is empty."
 
         log.info(
-            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s",
-            query, k, fetch_k, use_rerank,
+            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter_doc_id=%s",
+            query, k, fetch_k, use_rerank, self._filter_doc_id,
         )
         self._vector = []
         self._reranked = None
@@ -89,7 +95,8 @@ class SearchController:
 
         try:
             result = self._client.search_for_debug(
-                query, k=k, fetch_k=fetch_k, use_rerank=use_rerank
+                query, k=k, fetch_k=fetch_k, use_rerank=use_rerank,
+                doc_id=self._filter_doc_id,
             )
         except Exception as e:
             log.error("Search failed: %s", e, exc_info=True)
@@ -121,6 +128,19 @@ class SearchController:
             "select_chunk: chunk_id=%s  %s=%s",
             doc.metadata.get("chunk_id"), score_key, score,
         )
+
+    def set_filter(self, doc_id: str | None) -> None:
+        """Set the active doc_id filter. Pass None to disable filtering."""
+        self._filter_doc_id = doc_id
+        log.info("filter set: doc_id=%s", doc_id)
+
+    def list_doc_ids(self) -> list[str]:
+        """Return all distinct doc_id values from the Chroma collection."""
+        try:
+            return self._client.list_doc_ids()
+        except Exception as e:
+            log.error("list_doc_ids failed: %s", e)
+            return []
 
     # ------------------------------------------------------------------
     # Pure helpers (no state, safe to call as static methods)
