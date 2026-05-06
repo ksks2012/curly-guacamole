@@ -8,8 +8,11 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
+from utils.logger import AppLogger
 from rag.reranker import BaseReranker, CrossEncoderReranker, LLMReranker
 from rag.prompt import RAG_PROMPT, QUERY_EXPANSION_PROMPT
+
+log = AppLogger.get(__name__)
 
 # ---------------------------------------------------------------------------
 # All prompt templates live in rag/prompt.py.
@@ -26,8 +29,15 @@ class LocalLlamaClient:
     def __init__(self, config: AppConfig):
         # keep config for runtime settings
         self.config = config
+        log.info("Initialising LocalLlamaClient")
+        log.debug("  embed_base=%s  embed_model=%s", config.embed_base, config.embed_model)
+        log.debug("  llm_base=%s    llm_model=%s", config.llm_base, config.llm_model)
+        log.debug("  persist_directory=%s", config.persist_directory)
+        log.debug("  db_url=%s", config.db_url)
+        log.debug("  reranker_type=%s", config.reranker_type)
 
         # Embedding: points to your embedding server (llama.cpp server)
+        log.info("Building embeddings client → %s", config.embed_base)
         self.embed = OpenAIEmbeddings(
             openai_api_key=config.api_key,
             openai_api_base=config.embed_base,
@@ -35,13 +45,16 @@ class LocalLlamaClient:
         )
 
         # Vector store (Chroma)
+        log.info("Opening Chroma store → %s", config.persist_directory)
         self.persist_directory = config.persist_directory
         self.db = Chroma(
             persist_directory=config.persist_directory,
             embedding_function=self.embed,
         )
+        log.info("Chroma store ready")
 
         # LLM (chat) - points to your LLM server (also OpenAI-compatible)
+        log.info("Building LLM client → %s", config.llm_base)
         self.llm = ChatOpenAI(
             base_url=config.llm_base,
             api_key=config.api_key,
@@ -60,6 +73,8 @@ class LocalLlamaClient:
             self.reranker: BaseReranker | None = LLMReranker(self.llm)
         else:
             self.reranker = self._build_reranker(config)
+        log.info("Reranker: %s", type(self.reranker).__name__ if self.reranker else "disabled")
+        log.info("LocalLlamaClient ready")
 
     # ------------------------------------------------------------------
     # Retrieval
@@ -111,10 +126,13 @@ class LocalLlamaClient:
         Chroma returns L2 distance; we convert to a 0-1 relevance score so the
         dashboard can display a human-readable value: relevance = 1 / (1 + distance).
         """
+        log.debug("similarity_search_with_scores: query=%r  k=%d  doc_id=%s", query, k, doc_id)
         kwargs: dict = {"k": k}
         if doc_id is not None:
             kwargs["filter"] = {"doc_id": doc_id}
         raw = self.db.similarity_search_with_score(query, **kwargs)
+        log.debug("  raw results: %d  (L2 distances: %s)",
+                  len(raw), [round(d, 4) for _, d in raw])
         # Convert L2 distance → relevance score in [0, 1]
         return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
 
@@ -133,13 +151,20 @@ class LocalLlamaClient:
             "reranked" : list[tuple[Document, float]] | None — (doc, rerank_score), k items
                          None when use_rerank is False or no reranker is configured.
         """
+        log.info("search_for_debug: query=%r  k=%d  fetch_k=%d  use_rerank=%s  doc_id=%s",
+                 query, k, fetch_k, use_rerank, doc_id)
         vector_results = self.similarity_search_with_scores(query, k=fetch_k, doc_id=doc_id)
+        log.info("  vector results: %d", len(vector_results))
 
         if not use_rerank or self.reranker is None:
+            if use_rerank and self.reranker is None:
+                log.warning("  use_rerank=True but no reranker is configured — skipping")
             return {"vector": vector_results, "reranked": None}
 
+        log.info("  reranking %d candidates → top %d", len(vector_results), k)
         docs = [doc for doc, _ in vector_results]
         reranked = self.reranker.rerank_with_scores(query, docs, top_k=k)
+        log.info("  reranked results: %d", len(reranked))
         return {"vector": vector_results, "reranked": reranked}
 
     # ------------------------------------------------------------------
@@ -262,24 +287,26 @@ class LocalLlamaClient:
             chunks = load_and_chunk_pdf(
                 pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, doc_id=doc_id
             )
-            print(f"Loaded PDF: {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})")
-            print(f"Sample metadata: {chunks[0].metadata if chunks else 'n/a'}")
+            log.info("Loaded PDF: %d chunks (chunk_size=%d, overlap=%d)",
+                     len(chunks), chunk_size, chunk_overlap)
+            log.debug("Sample metadata: %s", chunks[0].metadata if chunks else "n/a")
 
             self.run_indexing(chunks)
         except Exception as e:
-            print(f"Error loading PDF: {e}")
+            log.error("Error loading PDF: %s", e, exc_info=True)
 
     def setup_rag_collection(
         self,
         namespace: str = "rag_collection",
         db_url: str = "sqlite:///record_manager_cache.sql",
     ):
+        log.info("setup_rag_collection: namespace=%r  db_url=%s", namespace, db_url)
         try:
             self.record_manager = SQLRecordManager(namespace, db_url=db_url)
-            if not os.path.isfile(str(namespace)):
-                self.record_manager.create_schema()
+            self.record_manager.create_schema()
+            log.info("  record manager ready")
         except Exception as e:
-            print(f"Error setting up RAG collection: {e}")
+            log.error("Error setting up RAG collection: %s", e, exc_info=True)
 
     def run_indexing(self, docs: list[Document], batch_limit: int = 100):
         indexing_stats = {
@@ -292,6 +319,8 @@ class LocalLlamaClient:
             # Resolve batch_limit from argument or client config
             if batch_limit is None:
                 batch_limit = getattr(self, "config", None) and getattr(self.config, "batch_limit", 100) or 100
+
+            log.info("run_indexing: %d docs  batch_limit=%d", len(docs), batch_limit)
 
             if len(docs) > batch_limit:
                 cleanup_config = "scoped_ids"
@@ -310,9 +339,9 @@ class LocalLlamaClient:
                 key_encoder="sha256",
                 batch_size=batch_size_config,  # use the configured batch size
             )
-            print(f"Indexing status: {indexing_stats}")
+            log.info("Indexing complete: %s", indexing_stats)
         except Exception as e:
-            print(f"Error during indexing: {e}")
+            log.error("Error during indexing: %s", e, exc_info=True)
 
         return indexing_stats
 

@@ -115,3 +115,23 @@ class AppConfig:
     @property
     def test_search(self) -> str:
         return self._data.get("test_search", "test")
+
+    # --- Logging ---
+
+    @property
+    def log_level(self) -> str:
+        """Root log level. Override in config.yaml with: log_level: DEBUG"""
+        return self._data.get("log_level", "INFO")
+
+    @property
+    def log_format(self) -> str:
+        """Python logging format string."""
+        return self._data.get(
+            "log_format",
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+    @property
+    def log_datefmt(self) -> str:
+        """strftime date format for the asctime field."""
+        return self._data.get("log_datefmt", "%H:%M:%S")

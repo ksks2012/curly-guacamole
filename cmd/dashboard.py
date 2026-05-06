@@ -26,9 +26,9 @@ Run:
     python cmd/dashboard.py
 """
 
-import logging
-
 from nicegui import ui
+
+from utils.logger import AppLogger
 
 from utils.config import AppConfig
 from rag.client import LocalLlamaClient
@@ -36,18 +36,18 @@ from rag.client import LocalLlamaClient
 # ---------------------------------------------------------------------------
 # Logging (configure before anything else so client init messages appear)
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
+_config = AppConfig()
+AppLogger.setup(
+    level=_config.log_level,
+    fmt=_config.log_format,
+    datefmt=_config.log_datefmt,
 )
-log = logging.getLogger("dashboard")
+log = AppLogger.get("dashboard")
 
 # ---------------------------------------------------------------------------
 # Bootstrap client (expensive — loaded once at module start)
 # ---------------------------------------------------------------------------
 log.info("Loading config and building RAG client…")
-_config = AppConfig()
 _client = LocalLlamaClient(_config)
 log.info("RAG client ready")
 
