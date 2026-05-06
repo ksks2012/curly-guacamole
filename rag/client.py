@@ -118,6 +118,30 @@ class LocalLlamaClient:
         # Convert L2 distance → relevance score in [0, 1]
         return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
 
+    def search_for_debug(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 20,
+        doc_id: str | None = None,
+        use_rerank: bool = False,
+    ) -> dict:
+        """Returns vector results and optionally reranked results for the debug dashboard.
+
+        Returns a dict:
+            "vector"   : list[tuple[Document, float]] — (doc, relevance_score), fetch_k items
+            "reranked" : list[tuple[Document, float]] | None — (doc, rerank_score), k items
+                         None when use_rerank is False or no reranker is configured.
+        """
+        vector_results = self.similarity_search_with_scores(query, k=fetch_k, doc_id=doc_id)
+
+        if not use_rerank or self.reranker is None:
+            return {"vector": vector_results, "reranked": None}
+
+        docs = [doc for doc, _ in vector_results]
+        reranked = self.reranker.rerank_with_scores(query, docs, top_k=k)
+        return {"vector": vector_results, "reranked": reranked}
+
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------

@@ -29,12 +29,18 @@ if TYPE_CHECKING:
 
 
 class BaseReranker(ABC):
-    """Abstract reranker. Subclasses must implement `rerank`."""
+    """Abstract reranker. Subclasses must implement `rerank` and `rerank_with_scores`."""
 
     @abstractmethod
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
+        """Return (document, score) pairs for the top_k most relevant documents, best-first."""
+        ...
+
     def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
         """Return the top_k most relevant documents, best-first."""
-        ...
+        return [doc for doc, _ in self.rerank_with_scores(query, docs, top_k)]
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +68,9 @@ class CrossEncoderReranker(BaseReranker):
 
         self.model = CrossEncoder(model_name)
 
-    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
         if not docs:
             return []
 
@@ -70,7 +78,7 @@ class CrossEncoderReranker(BaseReranker):
         scores = self.model.predict(pairs)  # returns numpy array of floats
 
         ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in ranked[:top_k]]
+        return [(doc, float(score)) for score, doc in ranked[:top_k]]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +114,9 @@ class LLMReranker(BaseReranker):
     def __init__(self, llm: "ChatOpenAI"):
         self.llm = llm
 
-    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
         if not docs:
             return []
 
@@ -125,9 +135,9 @@ class LLMReranker(BaseReranker):
                 raise ValueError("Unexpected response shape from LLM reranker")
 
             ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-            return [doc for _, doc in ranked[:top_k]]
+            return [(doc, float(score)) for score, doc in ranked[:top_k]]
 
         except Exception as e:
             # Fallback: return first top_k docs unchanged if LLM response is unparseable
             print(f"[LLMReranker] fallback to original order due to: {e}")
-            return docs[:top_k]
+            return [(doc, 0.0) for doc in docs[:top_k]]
