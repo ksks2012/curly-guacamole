@@ -103,6 +103,21 @@ class LocalLlamaClient:
             kwargs["filter"] = {"doc_id": doc_id}
         return self.db.similarity_search(query, **kwargs)
 
+    def similarity_search_with_scores(
+        self, query: str, k: int = 5, doc_id: str | None = None
+    ) -> list[tuple[Document, float]]:
+        """Returns (Document, score) pairs sorted best-first (lower L2 distance = better).
+
+        Chroma returns L2 distance; we convert to a 0-1 relevance score so the
+        dashboard can display a human-readable value: relevance = 1 / (1 + distance).
+        """
+        kwargs: dict = {"k": k}
+        if doc_id is not None:
+            kwargs["filter"] = {"doc_id": doc_id}
+        raw = self.db.similarity_search_with_score(query, **kwargs)
+        # Convert L2 distance → relevance score in [0, 1]
+        return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
+
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------
