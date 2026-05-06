@@ -50,7 +50,15 @@ class AppConfig:
 
     @property
     def db_url(self) -> str:
-        return self._data.get("db_url", "./my_db/record_manager_cache.sql")
+        """SQLAlchemy-compatible URL for the record manager database.
+
+        If the configured value is a plain file path (no scheme), it is
+        automatically prefixed with 'sqlite:///' so SQLAlchemy can parse it.
+        """
+        raw = self._data.get("db_url", "./my_db/record_manager_cache.sql")
+        if "://" not in raw:
+            raw = "sqlite:///" + raw
+        return raw
 
     @property
     def setup_rag_collection(self):
