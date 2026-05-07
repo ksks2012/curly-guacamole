@@ -26,7 +26,7 @@ class Indexer:
         namespace   : SQLRecordManager namespace string.
         db_url      : SQLAlchemy-compatible URL for the record manager database.
         batch_limit : Threshold controlling cleanup strategy and batch size.
-                      When len(docs) > batch_limit, 'scoped_ids' cleanup is used;
+                      When len(docs) > batch_limit, 'scoped_full' cleanup is used;
                       otherwise 'incremental'. Defaults to 256.
     """
 
@@ -47,7 +47,7 @@ class Indexer:
         """Index documents into the vector store using the record manager.
 
         Selects cleanup strategy automatically:
-          - len(docs) > batch_limit → 'scoped_ids'  (conservative, smaller batches)
+          - len(docs) > batch_limit → 'scoped_full'  (conservative, smaller batches)
           - len(docs) <= batch_limit → 'incremental' (full-batch, faster)
 
         Returns:
@@ -56,7 +56,7 @@ class Indexer:
         stats = {"num_added": 0, "num_updated": 0, "num_skipped": 0, "num_deleted": 0}
         try:
             if len(docs) > self.batch_limit:
-                cleanup = "scoped_ids"
+                cleanup = "scoped_full"
                 batch_size = min(100, self.batch_limit)
             else:
                 cleanup = "incremental"

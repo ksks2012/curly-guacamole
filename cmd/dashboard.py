@@ -381,10 +381,10 @@ def dashboard():
                                 "text-xs text-gray-400 italic"
                             )
 
-                    def handle_upload(e):
-                        file_bytes = e.content.read()
+                    async def handle_upload(e):
+                        file_bytes = await e.file.read()
                         ok = _idx_ctrl.index_pdf(
-                            file_name=e.name,
+                            file_name=e.file.name,
                             file_bytes=file_bytes,
                             chunk_size=int(chunk_size_input.value or 500),
                             chunk_overlap=int(overlap_input.value or 100),

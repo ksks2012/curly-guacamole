@@ -135,9 +135,9 @@ class LocalLlamaClient:
         """
         result = self.db.get(include=["metadatas"])
         ids = {
-            m.get("source")
+            m.get("doc_id")
             for m in (result.get("metadatas") or [])
-            if m and m.get("source")
+            if m and m.get("doc_id")
         }
         return sorted(ids)
 
