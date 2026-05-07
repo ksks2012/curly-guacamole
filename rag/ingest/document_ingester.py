@@ -33,6 +33,7 @@ from langchain_core.documents import Document
 
 from .chunker import chunk_documents
 from .parsers import parse_pdf, parse_markdown, parse_text
+from .schema import make_document_meta
 from utils.logger import AppLogger
 
 log = AppLogger.get(__name__)
@@ -61,21 +62,29 @@ class DocumentIngester:
         doc_id: str | None = None,
         chunk_size: int = 500,
         chunk_overlap: int = 100,
+        title: str = "",
+        tags: list[str] | None = None,
+        workspace: str = "",
+        importance: float = 0.0,
     ) -> list[Document]:
         """Parse *path* and return enriched, chunked Documents.
 
         Args:
-            path         : absolute or relative path to the document.
-            doc_id       : document-level identifier stored in chunk metadata.
-                           Defaults to the filename when not provided.
-            chunk_size   : maximum characters per chunk.
-            chunk_overlap: overlap between consecutive chunks.
+            path         : Absolute or relative path to the document.
+            doc_id       : Grouping / filter key stored in chunk metadata.
+                           Defaults to the filename stem when not provided.
+            chunk_size   : Maximum characters per chunk.
+            chunk_overlap: Overlap between consecutive chunks.
+            title        : Human-readable document title (defaults to doc_id).
+            tags         : Tag strings attached to every chunk.
+            workspace    : Logical workspace or project label.
+            importance   : Float priority stamp (0.0 = neutral).
 
         Returns:
             List of Documents ready to be passed to ``Indexer.run()``.
 
         Raises:
-            ValueError  : if the file extension is not supported.
+            ValueError        : if the file extension is not supported.
             FileNotFoundError : if the file does not exist.
         """
         abs_path = os.path.abspath(path)
@@ -98,11 +107,20 @@ class DocumentIngester:
         docs = parser(abs_path)
         log.debug("  parser produced %d document(s)", len(docs))
 
+        doc_meta = make_document_meta(
+            abs_path,
+            doc_id=doc_id or "",
+            title=title,
+            tags=tags,
+            workspace=workspace,
+            importance=importance,
+        )
+
         chunks = chunk_documents(
             docs,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            doc_id=doc_id,
+            doc_meta=doc_meta,
         )
         log.info("  chunked → %d chunks", len(chunks))
         return chunks

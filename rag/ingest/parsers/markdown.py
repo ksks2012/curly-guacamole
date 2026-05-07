@@ -76,7 +76,9 @@ def parse_markdown(path: str) -> list[Document]:
                     "source": abs_path,
                     "filename": filename,
                     "heading": heading,
-                    "hierarchy": hierarchy,
+                    # Chroma does not support list metadata values — serialise
+                    # hierarchy as a comma-joined string.
+                    "hierarchy": ",".join(hierarchy),
                     "level": level,
                 },
             )

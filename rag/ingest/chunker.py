@@ -1,20 +1,19 @@
 """
 chunker.py — content-aware text splitter for the ingestion pipeline.
 
-Uses RecursiveCharacterTextSplitter with configurable size/overlap and injects
-standardised metadata onto every chunk:
+Uses RecursiveCharacterTextSplitter with configurable size/overlap and stamps
+every chunk with the canonical metadata schema via schema.finalise_chunk.
 
-  source     : absolute path of the source file
-  filename   : basename of the source file
-  source_id  : grouping key for LangChain index() incremental cleanup (= doc_id)
-  doc_id     : caller-supplied identifier used for retrieval-time filtering
-  chunk_id   : sequential index across all chunks (0-based)
-
-Preserves existing metadata set by the parser (e.g. page, heading, hierarchy).
+When *doc_meta* is supplied (pre-built by DocumentIngester via
+schema.make_document_meta), it is merged into every chunk.  When omitted a
+minimal fallback dict is constructed from existing chunk metadata so that
+callers which bypass DocumentIngester still work correctly.
 """
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from .schema import finalise_chunk, make_document_meta
 
 
 def chunk_documents(
@@ -22,18 +21,21 @@ def chunk_documents(
     chunk_size: int = 500,
     chunk_overlap: int = 100,
     doc_id: str | None = None,
+    doc_meta: dict | None = None,
 ) -> list[Document]:
-    """Split *docs* into chunks and inject standard metadata.
+    """Split *docs* into chunks and stamp each with the canonical metadata schema.
 
     Args:
-        docs         : list of Documents produced by a parser.
-        chunk_size   : maximum characters per chunk.
-        chunk_overlap: overlap between consecutive chunks.
-        doc_id       : document-level identifier; falls back to the ``filename``
-                       metadata field, then to the ``source`` field basename.
+        docs         : Documents produced by a parser.
+        chunk_size   : Maximum characters per chunk.
+        chunk_overlap: Overlap between consecutive chunks.
+        doc_id       : Fallback grouping key used only when *doc_meta* is None.
+        doc_meta     : Pre-built document-level metadata from
+                       schema.make_document_meta.  When provided, *doc_id* is
+                       ignored.
 
     Returns:
-        List of Documents with fully-populated metadata.
+        List of Documents with fully-populated schema metadata.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -41,29 +43,18 @@ def chunk_documents(
     )
     chunks = splitter.split_documents(docs)
 
-    for idx, chunk in enumerate(chunks):
-        meta = chunk.metadata
-        source = meta.get("source", "")
-        filename = meta.get("filename", "") or (source.split("/")[-1] if source else "")
-        resolved_doc_id = (doc_id or "").strip() or meta.get("doc_id", "") or filename
-
-        # Build a clean, deterministic metadata dict.
-        # We keep parser-supplied keys (page, heading, hierarchy, …) but
-        # overwrite the five standard fields every downstream component depends on.
-        clean_meta: dict = {
-            k: v
-            for k, v in meta.items()
-            if k not in {"source_id", "doc_id", "chunk_id"}
-        }
-        clean_meta.update(
-            {
-                "source": source,
-                "filename": filename,
-                "source_id": resolved_doc_id,
-                "doc_id": resolved_doc_id,
-                "chunk_id": idx,
-            }
+    if doc_meta is None:
+        # Backward-compat: derive a minimal doc_meta from the first chunk.
+        first_meta = chunks[0].metadata if chunks else {}
+        source = first_meta.get("source", "")
+        fallback_doc_id = (
+            (doc_id or "").strip()
+            or first_meta.get("doc_id", "")
+            or (source.rsplit("/", 1)[-1] if source else "unknown")
         )
-        chunk.metadata = clean_meta
+        doc_meta = make_document_meta(source or "unknown", doc_id=fallback_doc_id)
+
+    for idx, chunk in enumerate(chunks):
+        finalise_chunk(chunk, idx, doc_meta)
 
     return chunks

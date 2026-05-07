@@ -85,6 +85,10 @@ class IndexController:
         doc_id: str,
         chunk_size: int = 500,
         chunk_overlap: int = 100,
+        title: str = "",
+        tags: list[str] | None = None,
+        workspace: str = "",
+        importance: float = 0.0,
     ) -> bool:
         """Ingest a saved file through the full pipeline and index it.
 
@@ -103,6 +107,10 @@ class IndexController:
                 doc_id=doc_id,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                title=title,
+                tags=tags,
+                workspace=workspace,
+                importance=importance,
             )
             stats = self._client.indexer.run(chunks)
             self._last_result = (
@@ -131,6 +139,10 @@ class IndexController:
         chunk_size: int = 500,
         chunk_overlap: int = 100,
         doc_id: str | None = None,
+        title: str = "",
+        tags: list[str] | None = None,
+        workspace: str = "",
+        importance: float = 0.0,
     ) -> bool:
         """Convenience wrapper: save bytes then embed. Returns True on success."""
         resolved_doc_id = (doc_id or "").strip() or file_name
@@ -141,7 +153,10 @@ class IndexController:
             self._last_ok = False
             log.error("index_file save failed: %s", e, exc_info=True)
             return False
-        return self.embed_file(save_path, resolved_doc_id, chunk_size, chunk_overlap)
+        return self.embed_file(
+            save_path, resolved_doc_id, chunk_size, chunk_overlap,
+            title=title, tags=tags, workspace=workspace, importance=importance,
+        )
 
     # Keep old name as alias
     def index_pdf(self, file_name: str, file_bytes: bytes, chunk_size: int = 500,

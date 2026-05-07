@@ -360,9 +360,33 @@ def dashboard():
                             placeholder="defaults to filename",
                         ).classes("flex-1 min-w-[14rem]")
 
+                # ── Document metadata ──────────────────────────────────────
+                with ui.card().classes("w-full max-w-2xl mb-4 p-4"):
+                    ui.label("Document metadata (optional)").classes(
+                        "text-sm font-semibold text-gray-600 mb-3"
+                    )
+                    with ui.row().classes("items-end gap-4 flex-wrap"):
+                        title_input = ui.input(
+                            label="Title",
+                            placeholder="defaults to doc-id",
+                        ).classes("flex-1 min-w-[14rem]")
+                        workspace_input = ui.input(
+                            label="Workspace",
+                            placeholder="e.g. work / personal",
+                        ).classes("w-40")
+                    with ui.row().classes("items-end gap-4 flex-wrap mt-2"):
+                        tags_input = ui.input(
+                            label="Tags (comma-separated)",
+                            placeholder="e.g. llm, notes, paper",
+                        ).classes("flex-1 min-w-[14rem]")
+                        importance_input = ui.number(
+                            label="Importance", value=0.0, min=0.0, max=1.0, step=0.1,
+                            format="%.1f",
+                        ).classes("w-36")
+
                 # ── Upload ─────────────────────────────────────────────────
                 with ui.card().classes("w-full max-w-2xl mb-4 p-4"):
-                    ui.label("Upload PDF").classes(
+                    ui.label("Upload document").classes(
                         "text-sm font-semibold text-gray-600 mb-3"
                     )
 
@@ -404,6 +428,10 @@ def dashboard():
                             close_button=True,
                         )
 
+                        # Parse tags from comma-separated input
+                        raw_tags = tags_input.value or ""
+                        tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
                         # Step 2: embed in background thread (slow — must not block event loop)
                         ok = await asyncio.to_thread(
                             _idx_ctrl.embed_file,
@@ -411,6 +439,10 @@ def dashboard():
                             resolved_doc_id,
                             int(chunk_size_input.value or 500),
                             int(overlap_input.value or 100),
+                            title_input.value.strip() or "",
+                            tags or None,
+                            workspace_input.value.strip() or "",
+                            float(importance_input.value or 0.0),
                         )
 
                         # Step 3: update UI
