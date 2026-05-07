@@ -7,13 +7,13 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 ## Features
 
 - **PDF ingestion** with deterministic chunking and enriched metadata
+- **Web-based upload** — upload and index PDFs directly from the dashboard
 - **MMR retrieval** to balance relevance and diversity
 - **Re-ranking** (cross-encoder or LLM-based, swappable via config)
 - **Query expansion** — generates alternative phrasings to broaden recall
 - **Citation-grounded answers** — LLM is forced to cite `[page N, filename]`
 - **Incremental indexing** via LangChain `index()` + SQLite record manager (no duplicates on re-run)
-- **Document-level filtering** with `doc_id` metadata
-- **Debug dashboard** — NiceGUI web UI for tuning retrieval, visualising rerank diff, and inspecting chunk metadata
+- **Document-level filtering** — scope search to a specific `doc_id` from the dashboard
 
 ## Requirements
 
@@ -42,6 +42,9 @@ embed_model: "text-embedding-ada-002"
 llm_model:   "local-model"
 api_key:     "sk-no-key-required"
 llm_kwargs:  {}
+
+# --- Upload ---
+upload_dir: "./data/uploads"      # directory where uploaded PDFs are saved
 
 # --- Vector store ---
 persist_directory: "./my_db"
@@ -86,20 +89,29 @@ python cmd/dashboard.py
 # open http://localhost:8888
 ```
 
-The dashboard is an engineering tool for tuning retrieval — not a demo.
+The dashboard is an engineering tool for tuning retrieval — not a demo. It has two tabs:
 
-**Phase 1 — Vector search**
-- Enter a query, choose `top-k` and `fetch-k`
+**Search tab**
+
+- Enter a query, choose `top-k` and `fetch-k`, optionally enable `Rerank`
 - Results show relevance score, page, chunk ID, filename, and content preview
 - Click any result card to inspect full metadata and chunk content in the right panel
+- Enable **Filter by doc** to scope the search to a single `doc_id`
 
-**Phase 2 — Rerank visualisation** (enable the `Rerank` checkbox)
+With rerank on:
 - Left column: all `fetch-k` vector candidates
 - Right column: top-`k` reranked results with rank-change indicators (`▲N` / `▼N`)
-- Blue left border = chunk that survived reranking; green = reranked result
+- Blue left border = chunk that survived reranking; green border = reranked result
 - Cross-encoder score displayed alongside vector relevance score for comparison
 
-### Indexing multiple documents with isolation
+**Index tab**
+
+- Set chunk size, overlap, and an optional `doc-id` override
+- Drop a PDF or click to select — the file is saved to `upload_dir` immediately and embedding runs in the background (upload confirmation appears before embedding completes)
+- Indexed document list updates automatically after each upload
+- The Search tab's filter dropdown is refreshed with any newly indexed `doc_id`
+
+### Indexing multiple documents with isolation (programmatic)
 
 ```python
 client.add_pdf("report_2024.pdf", doc_id="report_2024")
@@ -123,19 +135,26 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 ```
 .
 ├── cmd/
-│   └── dashboard.py          # NiceGUI debug dashboard (Phase 1+2)
+│   └── dashboard.py          # NiceGUI debug dashboard (Search + Index tabs)
+├── ui/
+│   ├── search_controller.py  # Search tab logic (state, search, filter)
+│   └── index_controller.py   # Index tab logic (save PDF, embed, list docs)
 ├── etc/
 │   └── config.yaml           # All runtime settings
 ├── rag/
 │   ├── __init__.py
-│   ├── client.py             # LocalLlamaClient — retrieval, reranking, generation
+│   ├── client.py             # LocalLlamaClient — coordinates all RAG components
+│   ├── engine.py             # RAGEngine — query expansion, retrieval, rerank, generation
+│   ├── indexer.py            # Indexer — SQLRecordManager lifecycle and document ingestion
 │   ├── prompt.py             # RAG_PROMPT, QUERY_EXPANSION_PROMPT
-│   └── reranker.py           # BaseReranker, CrossEncoderReranker, LLMReranker
+│   └── reranker.py           # BaseReranker, CrossEncoderReranker, LLMReranker, RerankerFactory
 ├── utils/
 │   ├── __init__.py
 │   ├── config.py             # AppConfig — typed properties over config.yaml
 │   ├── file_processor.py     # PDF chunking, YAML / JSON / CSV helpers
 │   └── logger.py             # AppLogger — centralised logging setup
+├── data/
+│   └── uploads/              # Uploaded PDFs (path configurable via upload_dir)
 ├── my_db/                    # Chroma vector store (auto-created)
 ├── main.py                   # Entry point
 ├── setup.py
