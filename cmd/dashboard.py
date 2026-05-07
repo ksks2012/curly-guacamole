@@ -391,7 +391,7 @@ def dashboard():
 
                         # Step 1: save to disk (fast I/O — runs on event loop)
                         try:
-                            save_path = _idx_ctrl.save_pdf(file_name, file_bytes, raw_doc_id)
+                            save_path = _idx_ctrl.save_file(file_name, file_bytes, raw_doc_id)
                         except Exception as ex:
                             ui.notify(f"Save failed: {ex}", type="negative")
                             log.error("Failed to save uploaded file: %s", ex, exc_info=True)
@@ -406,7 +406,7 @@ def dashboard():
 
                         # Step 2: embed in background thread (slow — must not block event loop)
                         ok = await asyncio.to_thread(
-                            _idx_ctrl.embed_pdf,
+                            _idx_ctrl.embed_file,
                             save_path,
                             resolved_doc_id,
                             int(chunk_size_input.value or 500),
@@ -424,11 +424,11 @@ def dashboard():
                         filter_select.set_options(_ctrl.list_doc_ids())
 
                     ui.upload(
-                        label="Drop PDF here or click to select",
+                        label="Drop a PDF, Markdown, or text file here (or click to select)",
                         on_upload=handle_upload,
                         max_files=1,
                         auto_upload=True,
-                    ).props("accept=.pdf flat").classes("w-full")
+                    ).props("accept=.pdf,.md,.markdown,.txt,.text flat").classes("w-full")
 
                     ui.separator().classes("my-3")
                     render_index_status()

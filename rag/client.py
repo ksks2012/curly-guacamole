@@ -9,6 +9,7 @@ from utils.file_processor import load_and_chunk_pdf, write_json
 from utils.logger import AppLogger
 from rag.engine import RAGEngine
 from rag.indexer import Indexer
+from rag.ingest.document_ingester import DocumentIngester
 from rag.reranker import RerankerFactory
 
 log = AppLogger.get(__name__)
@@ -67,6 +68,8 @@ class LocalLlamaClient:
             db_url=config.db_url,
             batch_limit=config.batch_limit,
         )
+
+        self.ingester = DocumentIngester()
 
         self.reranker = RerankerFactory.build(config, llm=self.llm)
         log.info("Reranker: %s", type(self.reranker).__name__ if self.reranker else "disabled")
@@ -201,6 +204,41 @@ class LocalLlamaClient:
             texts, embedding=self.embed, persist_directory=self.persist_directory
         )
 
+    def add_document(
+        self,
+        path: str,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
+        doc_id: str | None = None,
+    ) -> dict:
+        """Ingest any supported document type (PDF, Markdown, plain text).
+
+        Dispatches to the appropriate parser via DocumentIngester, then indexes
+        the resulting chunks through Indexer.run().
+
+        Args:
+            path         : path to the document file.
+            chunk_size   : maximum characters per chunk.
+            chunk_overlap: overlap between consecutive chunks.
+            doc_id       : document-level identifier; defaults to filename.
+
+        Returns:
+            Stats dict from Indexer.run() with keys:
+            num_added, num_updated, num_skipped, num_deleted.
+        """
+        try:
+            chunks = self.ingester.ingest(
+                path, doc_id=doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            )
+            log.info(
+                "add_document: %s  %d chunks  doc_id=%r",
+                path, len(chunks), doc_id,
+            )
+            return self.indexer.run(chunks)
+        except Exception as e:
+            log.error("add_document failed: %s", e, exc_info=True)
+            raise
+
     def add_pdf(
         self,
         pdf_path: str,
@@ -208,21 +246,10 @@ class LocalLlamaClient:
         chunk_overlap: int = 100,
         doc_id: str | None = None,
     ):
-        """Loads a PDF, splits it into chunks with metadata, and indexes via Indexer.
-
-        doc_id  : identifier stored in chunk metadata for retrieval-time filtering;
-                  defaults to the PDF filename when not provided.
-        """
-        try:
-            chunks = load_and_chunk_pdf(
-                pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, doc_id=doc_id
-            )
-            log.info("Loaded PDF: %d chunks (chunk_size=%d, overlap=%d)",
-                     len(chunks), chunk_size, chunk_overlap)
-            log.debug("Sample metadata: %s", chunks[0].metadata if chunks else "n/a")
-            self.indexer.run(chunks)
-        except Exception as e:
-            log.error("Error loading PDF: %s", e, exc_info=True)
+        """Backward-compatible wrapper — delegates to add_document."""
+        return self.add_document(
+            pdf_path, chunk_size=chunk_size, chunk_overlap=chunk_overlap, doc_id=doc_id
+        )
 
     def persist(self):
         """Force write to disk (newer Chroma versions auto-persist when persist_directory is set)."""
