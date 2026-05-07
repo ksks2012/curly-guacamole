@@ -7,3 +7,4 @@ chromadb
 pypdf
 pyyaml
 sentence-transformers
+nicegui

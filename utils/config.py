@@ -15,8 +15,25 @@ class AppConfig:
         "config.yaml",
     )
 
-    def __init__(self, path: str = _DEFAULT_CONFIG_PATH):
+    def __init__(self, path: str | None = None):
+        if path is None:
+            # When the package is pip-installed, __file__ resolves to site-packages
+            # and _DEFAULT_CONFIG_PATH no longer exists. Fall back to CWD/etc/config.yaml
+            # which is correct when running from the project root.
+            path = (
+                self._DEFAULT_CONFIG_PATH
+                if os.path.exists(self._DEFAULT_CONFIG_PATH)
+                else os.path.join(os.getcwd(), "etc", "config.yaml")
+            )
+        # Project root = two levels above the config file (etc/../)
+        self._root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
         self._data = read_yaml(path)
+
+    def _abspath(self, raw: str) -> str:
+        """Return an absolute path, resolving relative paths against the project root."""
+        if os.path.isabs(raw):
+            return raw
+        return os.path.normpath(os.path.join(self._root, raw))
 
     # --- Embedding server ---
 
@@ -45,12 +62,25 @@ class AppConfig:
     # --- Vector store ---
 
     @property
+    def upload_dir(self) -> str:
+        """Absolute directory where uploaded PDF files are stored."""
+        return self._abspath(self._data.get("upload_dir", "/tmp"))
+
+    @property
     def persist_directory(self) -> str:
         return self._data.get("persist_directory", "./my_db")
 
     @property
     def db_url(self) -> str:
-        return self._data.get("db_url", "./my_db/record_manager_cache.sql")
+        """SQLAlchemy-compatible URL for the record manager database.
+
+        If the configured value is a plain file path (no scheme), it is
+        automatically prefixed with 'sqlite:///' so SQLAlchemy can parse it.
+        """
+        raw = self._data.get("db_url", "./my_db/record_manager_cache.sql")
+        if "://" not in raw:
+            raw = "sqlite:///" + raw
+        return raw
 
     @property
     def setup_rag_collection(self):
@@ -107,3 +137,23 @@ class AppConfig:
     @property
     def test_search(self) -> str:
         return self._data.get("test_search", "test")
+
+    # --- Logging ---
+
+    @property
+    def log_level(self) -> str:
+        """Root log level. Override in config.yaml with: log_level: DEBUG"""
+        return self._data.get("log_level", "INFO")
+
+    @property
+    def log_format(self) -> str:
+        """Python logging format string."""
+        return self._data.get(
+            "log_format",
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+    @property
+    def log_datefmt(self) -> str:
+        """strftime date format for the asctime field."""
+        return self._data.get("log_datefmt", "%H:%M:%S")

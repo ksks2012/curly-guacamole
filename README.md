@@ -13,6 +13,7 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Citation-grounded answers** — LLM is forced to cite `[page N, filename]`
 - **Incremental indexing** via LangChain `index()` + SQLite record manager (no duplicates on re-run)
 - **Document-level filtering** with `doc_id` metadata
+- **Debug dashboard** — NiceGUI web UI for tuning retrieval, visualising rerank diff, and inspecting chunk metadata
 
 ## Requirements
 
@@ -56,6 +57,11 @@ reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 query_expansion_enabled: false
 query_expansion_n: 3              # number of extra phrasings to generate
 
+# --- Logging ---
+log_level:   "INFO"               # DEBUG | INFO | WARNING | ERROR
+log_format:  "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+log_datefmt: "%H:%M:%S"
+
 # --- Runtime / testing ---
 pdf_path:   "/path/to/your/document.pdf"
 test_query: "What are the main contents of this document?"
@@ -64,14 +70,34 @@ test_search: "your keyword"
 
 ## Usage
 
+### RAG pipeline (CLI)
+
 ```bash
 python main.py
 ```
 
-`main.py` will:
-1. Answer the question defined in `test_query` using the indexed Chroma collection.
-
+`main.py` will answer the question in `test_query` using the indexed Chroma collection.
 To index a PDF first, uncomment `client.add_pdf(config.pdf_path)` in `main.py`.
+
+### Debug dashboard
+
+```bash
+python cmd/dashboard.py
+# open http://localhost:8888
+```
+
+The dashboard is an engineering tool for tuning retrieval — not a demo.
+
+**Phase 1 — Vector search**
+- Enter a query, choose `top-k` and `fetch-k`
+- Results show relevance score, page, chunk ID, filename, and content preview
+- Click any result card to inspect full metadata and chunk content in the right panel
+
+**Phase 2 — Rerank visualisation** (enable the `Rerank` checkbox)
+- Left column: all `fetch-k` vector candidates
+- Right column: top-`k` reranked results with rank-change indicators (`▲N` / `▼N`)
+- Blue left border = chunk that survived reranking; green = reranked result
+- Cross-encoder score displayed alongside vector relevance score for comparison
 
 ### Indexing multiple documents with isolation
 
@@ -96,6 +122,8 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 
 ```
 .
+├── cmd/
+│   └── dashboard.py          # NiceGUI debug dashboard (Phase 1+2)
 ├── etc/
 │   └── config.yaml           # All runtime settings
 ├── rag/
@@ -106,7 +134,8 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 ├── utils/
 │   ├── __init__.py
 │   ├── config.py             # AppConfig — typed properties over config.yaml
-│   └── file_processor.py     # PDF chunking, YAML / JSON / CSV helpers
+│   ├── file_processor.py     # PDF chunking, YAML / JSON / CSV helpers
+│   └── logger.py             # AppLogger — centralised logging setup
 ├── my_db/                    # Chroma vector store (auto-created)
 ├── main.py                   # Entry point
 ├── setup.py

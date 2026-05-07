@@ -19,22 +19,32 @@ Both inherit from BaseReranker so they can be swapped out transparently.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
+from utils.config import AppConfig
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
 
 
 class BaseReranker(ABC):
-    """Abstract reranker. Subclasses must implement `rerank`."""
+    """Abstract reranker. Subclasses must implement `rerank` and `rerank_with_scores`."""
 
     @abstractmethod
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
+        """Return (document, score) pairs for the top_k most relevant documents, best-first."""
+        ...
+
     def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
         """Return the top_k most relevant documents, best-first."""
-        ...
+        return [doc for doc, _ in self.rerank_with_scores(query, docs, top_k)]
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +70,21 @@ class CrossEncoderReranker(BaseReranker):
                 "Install it with: pip install sentence-transformers"
             ) from exc
 
-        self.model = CrossEncoder(model_name)
+        # Prefer local cache to avoid unnecessary network round-trips.
+        # Fall back to downloading only when the model is not cached yet.
+        try:
+            self.model = CrossEncoder(model_name, local_files_only=True)
+            log.debug("CrossEncoder loaded from local cache: %s", model_name)
+        except Exception:
+            log.info(
+                "CrossEncoder cache miss for %s — downloading from hub (first run only)",
+                model_name,
+            )
+            self.model = CrossEncoder(model_name)
 
-    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
         if not docs:
             return []
 
@@ -70,7 +92,7 @@ class CrossEncoderReranker(BaseReranker):
         scores = self.model.predict(pairs)  # returns numpy array of floats
 
         ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-        return [doc for _, doc in ranked[:top_k]]
+        return [(doc, float(score)) for score, doc in ranked[:top_k]]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +128,9 @@ class LLMReranker(BaseReranker):
     def __init__(self, llm: "ChatOpenAI"):
         self.llm = llm
 
-    def rerank(self, query: str, docs: list[Document], top_k: int) -> list[Document]:
+    def rerank_with_scores(
+        self, query: str, docs: list[Document], top_k: int
+    ) -> list[tuple[Document, float]]:
         if not docs:
             return []
 
@@ -125,9 +149,35 @@ class LLMReranker(BaseReranker):
                 raise ValueError("Unexpected response shape from LLM reranker")
 
             ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-            return [doc for _, doc in ranked[:top_k]]
+            return [(doc, float(score)) for score, doc in ranked[:top_k]]
 
         except Exception as e:
             # Fallback: return first top_k docs unchanged if LLM response is unparseable
             print(f"[LLMReranker] fallback to original order due to: {e}")
-            return docs[:top_k]
+            return [(doc, 0.0) for doc in docs[:top_k]]
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+class RerankerFactory:
+    """Instantiates the configured reranker without exposing construction details."""
+
+    @staticmethod
+    def build(config: "AppConfig", llm=None) -> "BaseReranker | None":
+        """Return the appropriate BaseReranker, or None when reranking is disabled.
+
+        Args:
+            config : AppConfig — reads reranker_type and reranker_model.
+            llm    : ChatOpenAI instance, required only when reranker_type == 'llm'.
+        """
+        kind = config.reranker_type
+        if kind == "cross_encoder":
+            return CrossEncoderReranker(model_name=config.reranker_model)
+        if kind == "llm":
+            if llm is None:
+                raise ValueError("LLMReranker requires an llm instance; pass llm= to build()")
+            return LLMReranker(llm)
+        # 'none' or unrecognised → reranking disabled
+        return None
