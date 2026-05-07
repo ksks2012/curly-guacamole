@@ -38,7 +38,7 @@ from utils.config import AppConfig
 from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
 from ui.search_controller import RERANKER_UNAVAILABLE, SearchController
-from index_controller import IndexController
+from ui.index_controller import IndexController
 
 # ---------------------------------------------------------------------------
 # Bootstrap: config → logging → client → controller
