@@ -30,6 +30,8 @@ Run:
     python cmd/dashboard.py
 """
 
+import asyncio
+
 from nicegui import ui
 
 from utils.config import AppConfig
@@ -383,19 +385,43 @@ def dashboard():
 
                     async def handle_upload(e):
                         file_bytes = await e.file.read()
-                        ok = _idx_ctrl.index_pdf(
-                            file_name=e.file.name,
-                            file_bytes=file_bytes,
-                            chunk_size=int(chunk_size_input.value or 500),
-                            chunk_overlap=int(overlap_input.value or 100),
-                            doc_id=doc_id_input.value or None,
+                        file_name = e.file.name
+                        raw_doc_id = doc_id_input.value or None
+                        resolved_doc_id = (raw_doc_id or "").strip() or file_name
+
+                        # Step 1: save to disk (fast I/O — runs on event loop)
+                        try:
+                            save_path = _idx_ctrl.save_pdf(file_name, file_bytes, raw_doc_id)
+                        except Exception as ex:
+                            ui.notify(f"Save failed: {ex}", type="negative")
+                            log.error("Failed to save uploaded file: %s", ex, exc_info=True)
+                            return
+                                            
+                        ui.notify(
+                            f"Saved {file_name} ({len(file_bytes) // 1024} KB) — embedding…",
+                            type="info",
+                            timeout=0,
+                            close_button=True,
                         )
+
+                        # Step 2: embed in background thread (slow — must not block event loop)
+                        ok = await asyncio.to_thread(
+                            _idx_ctrl.embed_pdf,
+                            save_path,
+                            resolved_doc_id,
+                            int(chunk_size_input.value or 500),
+                            int(overlap_input.value or 100),
+                        )
+
+                        # Step 3: update UI
                         ui.notify(
                             _idx_ctrl.last_result,
                             type="positive" if ok else "negative",
                         )
                         render_index_status.refresh()
                         render_doc_list.refresh()
+                        # Sync Search tab filter options with newly indexed docs
+                        filter_select.set_options(_ctrl.list_doc_ids())
 
                     ui.upload(
                         label="Drop PDF here or click to select",

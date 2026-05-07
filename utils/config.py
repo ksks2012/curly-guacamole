@@ -15,8 +15,25 @@ class AppConfig:
         "config.yaml",
     )
 
-    def __init__(self, path: str = _DEFAULT_CONFIG_PATH):
+    def __init__(self, path: str | None = None):
+        if path is None:
+            # When the package is pip-installed, __file__ resolves to site-packages
+            # and _DEFAULT_CONFIG_PATH no longer exists. Fall back to CWD/etc/config.yaml
+            # which is correct when running from the project root.
+            path = (
+                self._DEFAULT_CONFIG_PATH
+                if os.path.exists(self._DEFAULT_CONFIG_PATH)
+                else os.path.join(os.getcwd(), "etc", "config.yaml")
+            )
+        # Project root = two levels above the config file (etc/../)
+        self._root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
         self._data = read_yaml(path)
+
+    def _abspath(self, raw: str) -> str:
+        """Return an absolute path, resolving relative paths against the project root."""
+        if os.path.isabs(raw):
+            return raw
+        return os.path.normpath(os.path.join(self._root, raw))
 
     # --- Embedding server ---
 
@@ -43,6 +60,11 @@ class AppConfig:
         return self._data.get("llm_kwargs", {})
 
     # --- Vector store ---
+
+    @property
+    def upload_dir(self) -> str:
+        """Absolute directory where uploaded PDF files are stored."""
+        return self._abspath(self._data.get("upload_dir", "/tmp"))
 
     @property
     def persist_directory(self) -> str:
