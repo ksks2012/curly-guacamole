@@ -175,3 +175,35 @@ class IndexController:
         except Exception as e:
             log.error("list_docs failed: %s", e)
             return []
+
+    def get_doc_info(self, doc_id: str) -> dict:
+        """Return aggregated metadata for a single document.
+
+        Queries Chroma for all chunks belonging to *doc_id* and returns a
+        summary dict with doc-level fields from the first chunk plus the total
+        chunk count.
+        """
+        try:
+            result = self._client.db.get(
+                where={"doc_id": {"$eq": doc_id}},
+                include=["metadatas"],
+            )
+            metas = result.get("metadatas") or []
+            if not metas:
+                return {"doc_id": doc_id, "chunk_count": 0}
+            first = metas[0] or {}
+            return {
+                "doc_id":        doc_id,
+                "chunk_count":   len(metas),
+                "title":         first.get("title", ""),
+                "workspace":     first.get("workspace", ""),
+                "tags":          first.get("tags", ""),
+                "document_type": first.get("document_type", ""),
+                "importance":    first.get("importance", ""),
+                "source":        first.get("source", ""),
+                "created_time":  first.get("created_time", ""),
+                "updated_time":  first.get("updated_time", ""),
+            }
+        except Exception as e:
+            log.error("get_doc_info failed for %r: %s", doc_id, e)
+            return {"doc_id": doc_id, "chunk_count": "?"}
