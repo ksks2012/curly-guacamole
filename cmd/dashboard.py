@@ -359,6 +359,16 @@ def dashboard():
                             label="doc-id override (optional)",
                             placeholder="defaults to filename",
                         ).classes("flex-1 min-w-[14rem]")
+                        strategy_select = ui.select(
+                            options={
+                                "auto":      "auto (by file type)",
+                                "recursive": "recursive",
+                                "heading":   "heading-aware",
+                                "semantic":  "semantic (slow)",
+                            },
+                            value="auto",
+                            label="Chunk strategy",
+                        ).classes("w-44").props("outlined dense")
 
                 # ── Document metadata ──────────────────────────────────────
                 with ui.card().classes("w-full max-w-2xl mb-4 p-4"):
@@ -432,6 +442,11 @@ def dashboard():
                         raw_tags = tags_input.value or ""
                         tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
+                        # Resolve strategy (None means auto)
+                        strategy = strategy_select.value
+                        if strategy == "auto":
+                            strategy = None
+
                         # Step 2: embed in background thread (slow — must not block event loop)
                         ok = await asyncio.to_thread(
                             _idx_ctrl.embed_file,
@@ -443,6 +458,7 @@ def dashboard():
                             tags or None,
                             workspace_input.value.strip() or "",
                             float(importance_input.value or 0.0),
+                            strategy,
                         )
 
                         # Step 3: update UI

@@ -89,6 +89,7 @@ class IndexController:
         tags: list[str] | None = None,
         workspace: str = "",
         importance: float = 0.0,
+        strategy: str | None = None,
     ) -> bool:
         """Ingest a saved file through the full pipeline and index it.
 
@@ -98,8 +99,8 @@ class IndexController:
         """
         file_name = os.path.basename(save_path)
         log.info(
-            "embed_file: path=%s  doc_id=%s  chunk_size=%d  overlap=%d",
-            save_path, doc_id, chunk_size, chunk_overlap,
+            "embed_file: path=%s  doc_id=%s  chunk_size=%d  overlap=%d  strategy=%s",
+            save_path, doc_id, chunk_size, chunk_overlap, strategy or "auto",
         )
         try:
             chunks = self._client.ingester.ingest(
@@ -111,6 +112,7 @@ class IndexController:
                 tags=tags,
                 workspace=workspace,
                 importance=importance,
+                strategy=strategy,
             )
             stats = self._client.indexer.run(chunks)
             self._last_result = (
@@ -143,6 +145,7 @@ class IndexController:
         tags: list[str] | None = None,
         workspace: str = "",
         importance: float = 0.0,
+        strategy: str | None = None,
     ) -> bool:
         """Convenience wrapper: save bytes then embed. Returns True on success."""
         resolved_doc_id = (doc_id or "").strip() or file_name
@@ -156,6 +159,7 @@ class IndexController:
         return self.embed_file(
             save_path, resolved_doc_id, chunk_size, chunk_overlap,
             title=title, tags=tags, workspace=workspace, importance=importance,
+            strategy=strategy,
         )
 
     # Keep old name as alias

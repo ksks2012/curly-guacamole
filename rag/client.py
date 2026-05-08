@@ -69,7 +69,7 @@ class LocalLlamaClient:
             batch_limit=config.batch_limit,
         )
 
-        self.ingester = DocumentIngester()
+        self.ingester = DocumentIngester(embeddings=self.embed)
 
         self.reranker = RerankerFactory.build(config, llm=self.llm)
         log.info("Reranker: %s", type(self.reranker).__name__ if self.reranker else "disabled")

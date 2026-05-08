@@ -1,14 +1,16 @@
-"""
-document_ingester.py — unified entry point for the ingestion pipeline.
+"""document_ingester.py — unified entry point for the ingestion pipeline.
 
 Usage::
 
-    ingester = DocumentIngester()
+    from langchain_openai import OpenAIEmbeddings
+
+    ingester = DocumentIngester(embeddings=my_embed_model)
     chunks = ingester.ingest(
         path="/path/to/file.pdf",   # or .md / .txt
         doc_id="my-doc",
         chunk_size=500,
         chunk_overlap=100,
+        strategy="auto",            # auto / recursive / heading / semantic
     )
 
 Supported extensions: .pdf  .md  .markdown  .txt  .text
@@ -22,8 +24,12 @@ Pipeline::
         │  produces Documents with source-specific metadata
         │  (page, heading, hierarchy, …)
         ▼
-    Chunker  (RecursiveCharacterTextSplitter)
-        │  injects standard fields: source_id, doc_id, chunk_id
+    make_document_meta  (schema.py)
+        │  builds document-level metadata dict
+        ▼
+    Chunker  (chunker.py)
+        │  dispatches to: recursive / heading-aware / semantic strategy
+        │  stamps every chunk with canonical schema fields
         ▼
     list[Document]  → ready for Indexer.run()
 """
@@ -34,6 +40,7 @@ from langchain_core.documents import Document
 from .chunker import chunk_documents
 from .parsers import parse_pdf, parse_markdown, parse_text
 from .schema import make_document_meta
+from .strategies import auto_strategy, resolve_strategy
 from utils.logger import AppLogger
 
 log = AppLogger.get(__name__)
@@ -53,8 +60,13 @@ SUPPORTED_EXTENSIONS = tuple(_PARSERS.keys())
 class DocumentIngester:
     """Dispatches a file to the appropriate parser and runs the chunker.
 
-    This class is stateless; create one instance per application or per call.
+    Args:
+        embeddings : LangChain-compatible embeddings model.  Required only
+                     when ``strategy='semantic'`` is used; ignored otherwise.
     """
+
+    def __init__(self, embeddings=None) -> None:
+        self._embeddings = embeddings
 
     def ingest(
         self,
@@ -66,6 +78,7 @@ class DocumentIngester:
         tags: list[str] | None = None,
         workspace: str = "",
         importance: float = 0.0,
+        strategy: str | None = None,
     ) -> list[Document]:
         """Parse *path* and return enriched, chunked Documents.
 
@@ -73,12 +86,15 @@ class DocumentIngester:
             path         : Absolute or relative path to the document.
             doc_id       : Grouping / filter key stored in chunk metadata.
                            Defaults to the filename stem when not provided.
-            chunk_size   : Maximum characters per chunk.
-            chunk_overlap: Overlap between consecutive chunks.
+            chunk_size   : Maximum characters per chunk (or buffer hint for semantic).
+            chunk_overlap: Overlap between consecutive chunks (unused for semantic).
             title        : Human-readable document title (defaults to doc_id).
             tags         : Tag strings attached to every chunk.
             workspace    : Logical workspace or project label.
             importance   : Float priority stamp (0.0 = neutral).
+            strategy     : Chunking strategy: "auto" | "recursive" | "heading" |
+                           "semantic".  None / "auto" selects automatically:
+                           markdown → heading, others → recursive.
 
         Returns:
             List of Documents ready to be passed to ``Indexer.run()``.
@@ -99,9 +115,14 @@ class DocumentIngester:
                 f"Supported: {', '.join(sorted(_PARSERS))}"
             )
 
+        resolved_strategy = resolve_strategy(strategy)
+
         log.info(
-            "DocumentIngester.ingest: %s  ext=%s  doc_id=%r  chunk_size=%d  overlap=%d",
-            os.path.basename(abs_path), ext, doc_id, chunk_size, chunk_overlap,
+            "DocumentIngester.ingest: %s  ext=%s  doc_id=%r  chunk_size=%d"
+            "  overlap=%d  strategy=%s",
+            os.path.basename(abs_path), ext, doc_id, chunk_size,
+            chunk_overlap, (resolved_strategy or "auto").value
+            if hasattr(resolved_strategy or "auto", "value") else "auto",
         )
 
         docs = parser(abs_path)
@@ -116,11 +137,18 @@ class DocumentIngester:
             importance=importance,
         )
 
+        # When strategy is None/auto, pick based on document_type
+        if resolved_strategy is None:
+            resolved_strategy = auto_strategy(doc_meta["document_type"])
+            log.debug("  auto-selected strategy: %s", resolved_strategy.value)
+
         chunks = chunk_documents(
             docs,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             doc_meta=doc_meta,
+            strategy=resolved_strategy,
+            embeddings=self._embeddings,
         )
-        log.info("  chunked → %d chunks", len(chunks))
+        log.info("  strategy=%s  chunks=%d", resolved_strategy.value, len(chunks))
         return chunks
