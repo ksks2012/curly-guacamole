@@ -106,28 +106,33 @@ def dashboard():
                             label="top-k", value=5, min=1, max=20, step=1
                         ).classes("w-24")
                         rerank_toggle = ui.checkbox("Rerank")
+                        hybrid_toggle = ui.checkbox("Hybrid")
 
                         def do_search():
                             rerank_on = rerank_toggle.value
+                            hybrid_on = hybrid_toggle.value
                             k = int(top_k_input.value or 5)
                             fetch_k = int(fetch_k_input.value or 20)
 
-                            ui.notify("Searching\u2026", type="info", timeout=1500)
-                            error = _ctrl.run_search(query_input.value, k, fetch_k, rerank_on)
+                            ui.notify("Searching…", type="info", timeout=1500)
+                            error = _ctrl.run_search(
+                                query_input.value, k, fetch_k,
+                                use_rerank=rerank_on, use_hybrid=hybrid_on,
+                            )
 
                             if error == "Query is empty.":
                                 ui.notify("Please enter a query.", type="warning")
                                 return
                             if error == RERANKER_UNAVAILABLE:
                                 ui.notify(
-                                    "Reranker not available \u2014 check config.reranker_type.",
+                                    "Reranker not available — check config.reranker_type.",
                                     type="warning",
                                 )
                             elif error:
                                 ui.notify(f"Search error: {error}", type="negative")
                                 return
 
-                            render_results.refresh(rerank_on)
+                            render_results.refresh(rerank_on, hybrid_on)
                             render_detail.refresh()
 
                         ui.button("Search", on_click=do_search).classes(
@@ -250,10 +255,13 @@ def dashboard():
                     " overflow: hidden; align-items: stretch;"
                 ):
                     @ui.refreshable
-                    def render_results(rerank_on: bool = False):
+                    def render_results(rerank_on: bool = False, hybrid_on: bool = False):
                         vector = _ctrl.vector_results
                         reranked = _ctrl.reranked_results
                         reranked_ids = _ctrl.reranked_chunk_ids
+                        bm25 = _ctrl.bm25_results
+                        hybrid = _ctrl.hybrid_results
+                        hybrid_ids = _ctrl.hybrid_chunk_ids
 
                         with ui.element("div").style(
                             "display: flex; flex-direction: row; height: 100%;"
@@ -262,8 +270,10 @@ def dashboard():
                             # ── Vector column ──────────────────────────────
                             with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
                                 header = f"VECTOR  ({len(vector)})"
-                                if reranked_ids:
-                                    header += f"  \u00b7  {len(reranked_ids)} passed rerank"
+                                if hybrid_ids:
+                                    header += f"  ·  {len(hybrid_ids)} in fused"
+                                elif reranked_ids:
+                                    header += f"  ·  {len(reranked_ids)} passed rerank"
                                 ui.label(header).classes(
                                     "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2"
                                 )
@@ -278,12 +288,14 @@ def dashboard():
                                         page = doc.metadata.get("page", "?")
                                         filename = doc.metadata.get("filename", "?")
                                         preview = doc.page_content[:180].replace("\n", " ")
+                                        in_fused = chunk_id in hybrid_ids
                                         in_reranked = chunk_id in reranked_ids
-                                        border = (
-                                            "border-l-4 border-blue-300"
-                                            if in_reranked
-                                            else "border-l-4 border-transparent"
-                                        )
+                                        if in_fused:
+                                            border = "border-l-4 border-amber-400"
+                                        elif in_reranked:
+                                            border = "border-l-4 border-blue-300"
+                                        else:
+                                            border = "border-l-4 border-transparent"
                                         page_str = str(int(page) + 1) if page != "?" else "?"
 
                                         with ui.card().classes(
@@ -309,14 +321,103 @@ def dashboard():
                                                     "text-blue-400 text-xs truncate max-w-[9rem]"
                                                 )
                                             ui.label(
-                                                preview + ("\u2026" if len(doc.page_content) > 180 else "")
+                                                preview + ("…" if len(doc.page_content) > 180 else "")
                                             ).classes("text-xs text-gray-600 leading-snug mt-0.5")
 
-                            # ── Reranked column (only when rerank is ON) ───
+                            # ── BM25 column (only when hybrid is ON) ───────
+                            if hybrid_on:
+                                with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
+                                    bm25_count = len(bm25) if bm25 else 0
+                                    ui.label(f"BM25  ({bm25_count})").classes(
+                                        "text-xs font-semibold uppercase tracking-wide text-orange-500 mb-2"
+                                    )
+                                    if not bm25:
+                                        ui.label("No BM25 results.").classes(
+                                            "text-gray-400 italic text-sm"
+                                        )
+                                    else:
+                                        for b_rank, (doc, bscore) in enumerate(bm25):
+                                            chunk_id = doc.metadata.get("chunk_id", "?")
+                                            page = doc.metadata.get("page", "?")
+                                            filename = doc.metadata.get("filename", "?")
+                                            preview = doc.page_content[:180].replace("\n", " ")
+                                            page_str = str(int(page) + 1) if page != "?" else "?"
+                                            with ui.card().classes(
+                                                "w-full cursor-pointer hover:shadow-md mb-1"
+                                                " border-l-4 border-orange-300"
+                                            ).on(
+                                                "click",
+                                                lambda d=doc, s=bscore: (
+                                                    _ctrl.select_chunk(d, s, "bm25score"),
+                                                    render_detail.refresh(),
+                                                ),
+                                            ):
+                                                with ui.row().classes("items-center gap-2 flex-wrap"):
+                                                    ui.label(f"#{b_rank + 1}").classes(
+                                                        "text-xs font-bold w-5 text-orange-400"
+                                                    )
+                                                    ui.label(f"{bscore:.3f}").classes(
+                                                        "font-mono text-xs font-semibold text-orange-600"
+                                                    )
+                                                    ui.label(f"p{page_str}").classes("text-gray-400 text-xs")
+                                                    ui.label(f"c{chunk_id}").classes("text-gray-400 text-xs")
+                                                    ui.label(filename).classes(
+                                                        "text-blue-400 text-xs truncate max-w-[9rem]"
+                                                    )
+                                                ui.label(
+                                                    preview + ("…" if len(doc.page_content) > 180 else "")
+                                                ).classes("text-xs text-gray-600 leading-snug mt-0.5")
+
+                                # ── Fused column (hybrid ON, rerank OFF) ───
+                                if not rerank_on:
+                                    with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
+                                        fused_count = len(hybrid) if hybrid else 0
+                                        ui.label(f"FUSED RRF  ({fused_count})").classes(
+                                            "text-xs font-semibold uppercase tracking-wide text-amber-600 mb-2"
+                                        )
+                                        if not hybrid:
+                                            ui.label("No fused results.").classes(
+                                                "text-gray-400 italic text-sm"
+                                            )
+                                        else:
+                                            for f_rank, (doc, fscore) in enumerate(hybrid):
+                                                chunk_id = doc.metadata.get("chunk_id", "?")
+                                                page = doc.metadata.get("page", "?")
+                                                filename = doc.metadata.get("filename", "?")
+                                                preview = doc.page_content[:180].replace("\n", " ")
+                                                page_str = str(int(page) + 1) if page != "?" else "?"
+                                                with ui.card().classes(
+                                                    "w-full cursor-pointer hover:shadow-md mb-1"
+                                                    " border-l-4 border-amber-400"
+                                                ).on(
+                                                    "click",
+                                                    lambda d=doc, s=fscore: (
+                                                        _ctrl.select_chunk(d, s, "rrf_score"),
+                                                        render_detail.refresh(),
+                                                    ),
+                                                ):
+                                                    with ui.row().classes("items-center gap-2 flex-wrap"):
+                                                        ui.label(f"#{f_rank + 1}").classes(
+                                                            "text-xs font-bold w-5 text-amber-600"
+                                                        )
+                                                        ui.label(f"{fscore:.4f}").classes(
+                                                            "font-mono text-xs font-semibold text-amber-700"
+                                                        )
+                                                        ui.label(f"p{page_str}").classes("text-gray-400 text-xs")
+                                                        ui.label(f"c{chunk_id}").classes("text-gray-400 text-xs")
+                                                        ui.label(filename).classes(
+                                                            "text-blue-400 text-xs truncate max-w-[9rem]"
+                                                        )
+                                                    ui.label(
+                                                        preview + ("…" if len(doc.page_content) > 180 else "")
+                                                    ).classes("text-xs text-gray-600 leading-snug mt-0.5")
+
+                            # ── Reranked column (rerank ON) ─────────────────
                             if rerank_on:
                                 with ui.column().style("flex: 1; min-height: 0; overflow-y: auto;"):
                                     count = len(reranked) if reranked else 0
-                                    ui.label(f"RERANKED  ({count})").classes(
+                                    label_prefix = "RERANKED (hybrid)" if hybrid_on else "RERANKED"
+                                    ui.label(f"{label_prefix}  ({count})").classes(
                                         "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2"
                                     )
 
@@ -361,10 +462,10 @@ def dashboard():
                                                         "text-blue-400 text-xs truncate max-w-[9rem]"
                                                     )
                                                 ui.label(
-                                                    preview + ("\u2026" if len(doc.page_content) > 180 else "")
+                                                    preview + ("…" if len(doc.page_content) > 180 else "")
                                                 ).classes("text-xs text-gray-600 leading-snug mt-0.5")
 
-                    render_results(False)
+                    render_results(False, False)
 
                     # Right — chunk detail panel
                     with ui.card().style(

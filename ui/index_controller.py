@@ -115,6 +115,7 @@ class IndexController:
                 strategy=strategy,
             )
             stats = self._client.indexer.run(chunks)
+            self._client.invalidate_bm25()
             self._last_result = (
                 f"{file_name} — {len(chunks)} chunks  "
                 f"added={stats.get('num_added', 0)}  "

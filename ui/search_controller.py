@@ -34,6 +34,8 @@ class SearchController:
         self._client = client
         self._vector: list[tuple[Document, float]] = []
         self._reranked: list[tuple[Document, float]] | None = None
+        self._bm25: list[tuple[Document, float]] | None = None
+        self._hybrid: list[tuple[Document, float]] | None = None
         self._metadata: dict = {}
         self._filter: SearchFilter = SearchFilter()
 
@@ -48,6 +50,21 @@ class SearchController:
     @property
     def reranked_results(self) -> list[tuple[Document, float]] | None:
         return self._reranked
+
+    @property
+    def bm25_results(self) -> list[tuple[Document, float]] | None:
+        """Raw BM25 results from the last hybrid search, or None."""
+        return self._bm25
+
+    @property
+    def hybrid_results(self) -> list[tuple[Document, float]] | None:
+        """RRF-fused results from the last hybrid search, or None."""
+        return self._hybrid
+
+    @property
+    def hybrid_chunk_ids(self) -> set:
+        """Set of chunk_ids present in the fused hybrid result list."""
+        return {doc.metadata.get("chunk_id") for doc, _ in (self._hybrid or [])}
 
     @property
     def selected_metadata(self) -> dict:
@@ -88,6 +105,7 @@ class SearchController:
         k: int,
         fetch_k: int,
         use_rerank: bool,
+        use_hybrid: bool = False,
     ) -> str | None:
         """Execute a debug search and update internal state.
 
@@ -102,16 +120,20 @@ class SearchController:
             return "Query is empty."
 
         log.info(
-            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter=%s",
-            query, k, fetch_k, use_rerank, self._filter.summary(),
+            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s"
+            "  use_hybrid=%s  filter=%s",
+            query, k, fetch_k, use_rerank, use_hybrid, self._filter.summary(),
         )
         self._vector = []
         self._reranked = None
+        self._bm25 = None
+        self._hybrid = None
         self._metadata = {}
 
         try:
             result = self._client.search_for_debug(
-                query, k=k, fetch_k=fetch_k, use_rerank=use_rerank,
+                query, k=k, fetch_k=fetch_k,
+                use_rerank=use_rerank, use_hybrid=use_hybrid,
                 search_filter=self._filter if self.filter_active else None,
             )
         except Exception as e:
@@ -120,9 +142,13 @@ class SearchController:
 
         self._vector = result["vector"]
         self._reranked = result["reranked"]
+        self._bm25 = result["bm25"]
+        self._hybrid = result["hybrid"]
         log.info(
-            "run_search done: %d vector  reranked=%s",
+            "run_search done: %d vector  bm25=%s  hybrid=%s  reranked=%s",
             len(self._vector),
+            len(self._bm25) if self._bm25 is not None else "off",
+            len(self._hybrid) if self._hybrid is not None else "off",
             len(self._reranked) if self._reranked is not None else "off",
         )
 

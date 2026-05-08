@@ -11,6 +11,7 @@ from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
 from rag.reranker import RerankerFactory
+from rag.retrieval.bm25 import BM25Index, rrf_fuse
 from rag.retrieval.filters import SearchFilter
 
 log = AppLogger.get(__name__)
@@ -81,6 +82,11 @@ class LocalLlamaClient:
             reranker=self.reranker,
             config=config,
         )
+
+        # BM25 index — built lazily on first hybrid search request
+        self.bm25_index = BM25Index()
+        self._bm25_dirty = True  # rebuild needed before first use
+
         log.info("LocalLlamaClient ready")
 
     # ------------------------------------------------------------------
@@ -209,6 +215,74 @@ class LocalLlamaClient:
     def list_tags(self) -> list[str]:
         return self.list_field_values("tags")
 
+    # ------------------------------------------------------------------
+    # BM25 index management
+    # ------------------------------------------------------------------
+
+    def rebuild_bm25(self) -> None:
+        """Fetch all indexed documents from Chroma and rebuild the BM25 index.
+
+        Called automatically before the first hybrid search after a dirty flag
+        is set by ``invalidate_bm25()``.
+        """
+        log.info("rebuild_bm25: fetching all documents from Chroma …")
+        result = self.db.get(include=["documents", "metadatas"])
+        docs: list[Document] = []
+        for text, meta in zip(
+            result.get("documents") or [], result.get("metadatas") or []
+        ):
+            if text:
+                docs.append(Document(page_content=text, metadata=meta or {}))
+        self.bm25_index.build(docs)
+        self._bm25_dirty = False
+        log.info("rebuild_bm25 done: %d documents", len(docs))
+
+    def invalidate_bm25(self) -> None:
+        """Mark the BM25 index as stale so it is rebuilt before next hybrid search."""
+        self._bm25_dirty = True
+        log.debug("BM25 index invalidated")
+
+    # ------------------------------------------------------------------
+    # Hybrid search
+    # ------------------------------------------------------------------
+
+    def hybrid_search_with_scores(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 20,
+        search_filter: "SearchFilter | None" = None,
+    ) -> tuple[
+        list[tuple[Document, float]],
+        list[tuple[Document, float]],
+        list[tuple[Document, float]],
+    ]:
+        """Run vector search + BM25 and merge via RRF.
+
+        Returns:
+            (vector_results, bm25_results, fused_results)
+            Each is a list of (Document, score) pairs sorted best-first.
+            *vector_results* and *bm25_results* each contain up to *fetch_k*
+            items; *fused_results* contains up to *fetch_k* items (candidates
+            for downstream reranking or as final results when top_k < fetch_k).
+        """
+        if self._bm25_dirty:
+            self.rebuild_bm25()
+
+        where = self._where(search_filter=search_filter)
+
+        vector = self.similarity_search_with_scores(
+            query, k=fetch_k, search_filter=search_filter
+        )
+        bm25 = self.bm25_index.search(query, k=fetch_k, where=where)
+        fused = rrf_fuse(vector, bm25, top_k=fetch_k)
+
+        log.debug(
+            "hybrid_search: vector=%d  bm25=%d  fused=%d",
+            len(vector), len(bm25), len(fused),
+        )
+        return vector, bm25, fused
+
     def search_for_debug(
         self,
         query: str,
@@ -216,39 +290,69 @@ class LocalLlamaClient:
         fetch_k: int = 20,
         doc_id: str | None = None,
         use_rerank: bool = False,
+        use_hybrid: bool = False,
         search_filter: "SearchFilter | None" = None,
     ) -> dict:
-        """Returns vector results and optionally reranked results for the debug dashboard.
+        """Returns retrieval results for the debug dashboard.
 
         Args:
             search_filter : multi-dimension filter; takes precedence over *doc_id*.
             doc_id        : kept for backward compatibility.
+            use_hybrid    : when True, also runs BM25 and fuses via RRF.
 
-        Returns a dict:
-            "vector"   : list[tuple[Document, float]] — (doc, relevance_score), fetch_k items
-            "reranked" : list[tuple[Document, float]] | None — (doc, rerank_score), k items
+        Returns a dict with keys:
+            "vector"   : list[tuple[Document, float]] — raw vector results (fetch_k)
+            "bm25"     : list[tuple[Document, float]] | None — BM25 results (fetch_k)
+                         None when use_hybrid is False.
+            "hybrid"   : list[tuple[Document, float]] | None — RRF-fused results (fetch_k)
+                         None when use_hybrid is False.
+            "reranked" : list[tuple[Document, float]] | None — top-k reranked candidates.
+                         When hybrid is ON, reranking uses fused candidates as input.
                          None when use_rerank is False or no reranker is configured.
         """
         filter_summary = search_filter.summary() if search_filter else doc_id
         log.info(
-            "search_for_debug: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter=%s",
-            query, k, fetch_k, use_rerank, filter_summary,
+            "search_for_debug: query=%r  k=%d  fetch_k=%d"
+            "  use_rerank=%s  use_hybrid=%s  filter=%s",
+            query, k, fetch_k, use_rerank, use_hybrid, filter_summary,
         )
-        vector_results = self.similarity_search_with_scores(
-            query, k=fetch_k, doc_id=doc_id, search_filter=search_filter,
-        )
-        log.info("  vector results: %d", len(vector_results))
 
-        if not use_rerank or self.reranker is None:
-            if use_rerank and self.reranker is None:
+        bm25_results: list[tuple[Document, float]] | None = None
+        hybrid_results: list[tuple[Document, float]] | None = None
+
+        if use_hybrid:
+            vector_results, bm25_results, hybrid_results = self.hybrid_search_with_scores(
+                query, k=k, fetch_k=fetch_k, search_filter=search_filter
+            )
+            rerank_pool = [doc for doc, _ in hybrid_results]
+        else:
+            vector_results = self.similarity_search_with_scores(
+                query, k=fetch_k, doc_id=doc_id, search_filter=search_filter,
+            )
+            rerank_pool = [doc for doc, _ in vector_results]
+
+        log.info(
+            "  vector=%d  bm25=%s  hybrid=%s",
+            len(vector_results),
+            len(bm25_results) if bm25_results is not None else "off",
+            len(hybrid_results) if hybrid_results is not None else "off",
+        )
+
+        reranked: list[tuple[Document, float]] | None = None
+        if use_rerank:
+            if self.reranker is not None:
+                log.info("  reranking %d candidates → top %d", len(rerank_pool), k)
+                reranked = self.reranker.rerank_with_scores(query, rerank_pool, top_k=k)
+                log.info("  reranked results: %d", len(reranked))
+            else:
                 log.warning("  use_rerank=True but no reranker is configured — skipping")
-            return {"vector": vector_results, "reranked": None}
 
-        log.info("  reranking %d candidates → top %d", len(vector_results), k)
-        docs = [doc for doc, _ in vector_results]
-        reranked = self.reranker.rerank_with_scores(query, docs, top_k=k)
-        log.info("  reranked results: %d", len(reranked))
-        return {"vector": vector_results, "reranked": reranked}
+        return {
+            "vector": vector_results,
+            "bm25": bm25_results,
+            "hybrid": hybrid_results,
+            "reranked": reranked,
+        }
 
     # ------------------------------------------------------------------
     # Generation
