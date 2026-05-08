@@ -11,6 +11,7 @@ from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
 from rag.reranker import RerankerFactory
+from rag.retrieval.filters import SearchFilter
 
 log = AppLogger.get(__name__)
 
@@ -105,29 +106,61 @@ class LocalLlamaClient:
             search_kwargs=search_kwargs,
         )
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _where(
+        self,
+        doc_id: str | None = None,
+        search_filter: "SearchFilter | None" = None,
+    ) -> dict | None:
+        """Build a Chroma ``where`` dict from either a SearchFilter or a bare doc_id.
+
+        search_filter takes precedence when both are supplied.
+        Returns None when no constraint is active (no filtering).
+        """
+        if search_filter is not None and not search_filter.is_empty():
+            return search_filter.to_chroma()
+        if doc_id is not None:
+            return {"doc_id": {"$eq": doc_id}}
+        return None
+
     def similarity_search(self, query: str, k: int = 4, doc_id: str | None = None):
         """Returns a list of similar documents from Chroma (LangChain Document objects)."""
         kwargs: dict = {"k": k}
-        if doc_id is not None:
-            kwargs["filter"] = {"doc_id": doc_id}
+        where = self._where(doc_id=doc_id)
+        if where:
+            kwargs["filter"] = where
         return self.db.similarity_search(query, **kwargs)
 
     def similarity_search_with_scores(
-        self, query: str, k: int = 5, doc_id: str | None = None
+        self,
+        query: str,
+        k: int = 5,
+        doc_id: str | None = None,
+        search_filter: "SearchFilter | None" = None,
     ) -> list[tuple[Document, float]]:
-        """Returns (Document, score) pairs sorted best-first (lower L2 distance = better).
+        """Returns (Document, score) pairs sorted best-first (lower L2 = better).
 
-        Chroma returns L2 distance; we convert to a 0-1 relevance score so the
-        dashboard can display a human-readable value: relevance = 1 / (1 + distance).
+        Chroma L2 distance is converted to a 0-1 relevance score:
+        ``relevance = 1 / (1 + distance)``.
+
+        Args:
+            search_filter : takes precedence over *doc_id* when supplied.
+            doc_id        : kept for backward compatibility.
         """
-        log.debug("similarity_search_with_scores: query=%r  k=%d  doc_id=%s", query, k, doc_id)
+        log.debug(
+            "similarity_search_with_scores: query=%r  k=%d  filter=%s",
+            query, k, search_filter.summary() if search_filter else doc_id,
+        )
         kwargs: dict = {"k": k}
-        if doc_id is not None:
-            kwargs["filter"] = {"doc_id": doc_id}
+        where = self._where(doc_id=doc_id, search_filter=search_filter)
+        if where:
+            kwargs["filter"] = where
         raw = self.db.similarity_search_with_score(query, **kwargs)
         log.debug("  raw results: %d  (L2 distances: %s)",
                   len(raw), [round(d, 4) for _, d in raw])
-        # Convert L2 distance → relevance score in [0, 1]
         return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
 
     def list_doc_ids(self) -> list[str]:
@@ -144,6 +177,38 @@ class LocalLlamaClient:
         }
         return sorted(ids)
 
+    def list_field_values(self, field: str) -> list[str]:
+        """Return distinct non-empty values for *field* across all indexed chunks.
+
+        For the 'tags' field the comma-joined values are split into individual
+        tag strings before deduplication.
+        """
+        result = self.db.get(include=["metadatas"])
+        values: set[str] = set()
+        for m in (result.get("metadatas") or []):
+            if not m:
+                continue
+            raw = m.get(field, "")
+            if not raw:
+                continue
+            if field == "tags":
+                for t in str(raw).split(","):
+                    t = t.strip()
+                    if t:
+                        values.add(t)
+            else:
+                values.add(str(raw))
+        return sorted(values)
+
+    def list_workspaces(self) -> list[str]:
+        return self.list_field_values("workspace")
+
+    def list_document_types(self) -> list[str]:
+        return self.list_field_values("document_type")
+
+    def list_tags(self) -> list[str]:
+        return self.list_field_values("tags")
+
     def search_for_debug(
         self,
         query: str,
@@ -151,17 +216,27 @@ class LocalLlamaClient:
         fetch_k: int = 20,
         doc_id: str | None = None,
         use_rerank: bool = False,
+        search_filter: "SearchFilter | None" = None,
     ) -> dict:
         """Returns vector results and optionally reranked results for the debug dashboard.
+
+        Args:
+            search_filter : multi-dimension filter; takes precedence over *doc_id*.
+            doc_id        : kept for backward compatibility.
 
         Returns a dict:
             "vector"   : list[tuple[Document, float]] — (doc, relevance_score), fetch_k items
             "reranked" : list[tuple[Document, float]] | None — (doc, rerank_score), k items
                          None when use_rerank is False or no reranker is configured.
         """
-        log.info("search_for_debug: query=%r  k=%d  fetch_k=%d  use_rerank=%s  doc_id=%s",
-                 query, k, fetch_k, use_rerank, doc_id)
-        vector_results = self.similarity_search_with_scores(query, k=fetch_k, doc_id=doc_id)
+        filter_summary = search_filter.summary() if search_filter else doc_id
+        log.info(
+            "search_for_debug: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter=%s",
+            query, k, fetch_k, use_rerank, filter_summary,
+        )
+        vector_results = self.similarity_search_with_scores(
+            query, k=fetch_k, doc_id=doc_id, search_filter=search_filter,
+        )
         log.info("  vector results: %d", len(vector_results))
 
         if not use_rerank or self.reranker is None:

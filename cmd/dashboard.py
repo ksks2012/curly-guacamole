@@ -136,48 +136,113 @@ def dashboard():
 
                     query_input.on("keydown.enter", do_search)
 
-                    # Row 2: filter controls
+                    # Row 2: filter toggle + active-filter summary
                     with ui.row().classes("w-full items-center gap-3 flex-wrap mt-2"):
-                        filter_toggle = ui.checkbox("Filter by doc")
-
-                        _doc_ids = _ctrl.list_doc_ids()
-                        filter_select = ui.select(
-                            options=_doc_ids,
-                            label="source doc",
-                            value=_doc_ids[0] if _doc_ids else None,
-                        ).classes("w-64").props("outlined dense")
-                        filter_select.set_visibility(False)
+                        filter_toggle = ui.checkbox("Filters")
 
                         @ui.refreshable
                         def render_filter_status():
-                            active = _ctrl.filter_doc_id
-                            if active:
-                                ui.label(f"Filter: doc_id = {active}").classes(
+                            if _ctrl.filter_active:
+                                ui.label(f"Active: {_ctrl.filter_summary}").classes(
                                     "text-xs font-mono bg-blue-50 text-blue-700"
                                     " border border-blue-200 rounded px-2 py-0.5"
                                 )
+                                ui.button(
+                                    "× Clear", on_click=lambda: (
+                                        _ctrl.clear_filter(),
+                                        _refresh_filter_inputs(),
+                                        render_filter_status.refresh(),
+                                    )
+                                ).props("flat dense").classes(
+                                    "text-xs text-red-400 px-1 py-0"
+                                )
                             else:
-                                ui.label("Filter: off \u2014 searching all documents").classes(
+                                ui.label("No filters active — searching all documents").classes(
                                     "text-xs text-gray-400 italic"
                                 )
 
                         render_filter_status()
+                        filter_toggle.on_value_change(
+                            lambda e: filter_panel.set_visibility(e.value)
+                        )
 
-                        def on_filter_toggle(enabled: bool):
-                            filter_select.set_visibility(enabled)
-                            if enabled:
-                                _ctrl.set_filter(filter_select.value)
-                            else:
-                                _ctrl.set_filter(None)
+                    # Filter panel (hidden by default)
+                    filter_panel = ui.element("div").classes(
+                        "w-full border border-gray-200 rounded bg-gray-50 p-3 mt-1"
+                    )
+                    filter_panel.set_visibility(False)
+
+                    with filter_panel:
+                        # These holders let _refresh_filter_inputs() reset values
+                        _fi_source = ui.select(
+                            options=[""] + _ctrl.list_doc_ids(),
+                            value="",
+                            label="Source (doc_id)",
+                        ).classes("w-52").props("outlined dense clearable")
+                        _fi_workspace = ui.select(
+                            options=[""] + _ctrl.list_workspaces(),
+                            value="",
+                            label="Workspace",
+                        ).classes("w-44").props("outlined dense clearable")
+                        _fi_doctype = ui.select(
+                            options=[""] + _ctrl.list_document_types(),
+                            value="",
+                            label="Doc type",
+                        ).classes("w-36").props("outlined dense clearable")
+                        _fi_tag = ui.input(
+                            label="Tag (substring)",
+                            placeholder="e.g. llm",
+                        ).classes("w-36")
+                        _fi_after = ui.input(
+                            label="Created after",
+                            placeholder="YYYY-MM-DD",
+                        ).classes("w-36")
+                        _fi_before = ui.input(
+                            label="Created before",
+                            placeholder="YYYY-MM-DD",
+                        ).classes("w-36")
+
+                        def _apply_filter_field(field: str, value):
+                            _ctrl.set_filter_field(field, value)
                             render_filter_status.refresh()
 
-                        def on_filter_select(doc_id: str):
-                            if filter_toggle.value:
-                                _ctrl.set_filter(doc_id)
-                                render_filter_status.refresh()
+                        def _refresh_filter_inputs():
+                            """Reset all filter inputs to reflect controller state."""
+                            f = _ctrl.filter
+                            _fi_source.set_value(f.source_id or "")
+                            _fi_workspace.set_value(f.workspace or "")
+                            _fi_doctype.set_value(f.document_type or "")
+                            _fi_tag.set_value(f.tag or "")
+                            _fi_after.set_value(f.created_after or "")
+                            _fi_before.set_value(f.created_before or "")
 
-                        filter_toggle.on_value_change(lambda e: on_filter_toggle(e.value))
-                        filter_select.on_value_change(lambda e: on_filter_select(e.value))
+                        _fi_source.on_value_change(
+                            lambda e: _apply_filter_field("source_id", e.value)
+                        )
+                        _fi_workspace.on_value_change(
+                            lambda e: _apply_filter_field("workspace", e.value)
+                        )
+                        _fi_doctype.on_value_change(
+                            lambda e: _apply_filter_field("document_type", e.value)
+                        )
+                        _fi_tag.on("keydown.enter",
+                            lambda: _apply_filter_field("tag", _fi_tag.value)
+                        )
+                        _fi_tag.on("blur",
+                            lambda: _apply_filter_field("tag", _fi_tag.value)
+                        )
+                        _fi_after.on("keydown.enter",
+                            lambda: _apply_filter_field("created_after", _fi_after.value)
+                        )
+                        _fi_after.on("blur",
+                            lambda: _apply_filter_field("created_after", _fi_after.value)
+                        )
+                        _fi_before.on("keydown.enter",
+                            lambda: _apply_filter_field("created_before", _fi_before.value)
+                        )
+                        _fi_before.on("blur",
+                            lambda: _apply_filter_field("created_before", _fi_before.value)
+                        )
 
                 # ── Body ──────────────────────────────────────────────────
                 with ui.row().style(
@@ -468,8 +533,8 @@ def dashboard():
                         )
                         render_index_status.refresh()
                         render_doc_list.refresh()
-                        # Sync Search tab filter options with newly indexed docs
-                        filter_select.set_options(_ctrl.list_doc_ids())
+                        # Refresh source_id dropdown in the filter panel
+                        _fi_source.set_options([""] + _ctrl.list_doc_ids())
 
                     ui.upload(
                         label="Drop a PDF, Markdown, or text file here (or click to select)",

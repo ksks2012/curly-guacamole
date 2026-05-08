@@ -14,6 +14,7 @@ from langchain_core.documents import Document
 
 from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
+from rag.retrieval.filters import SearchFilter
 
 log = AppLogger.get(__name__)
 
@@ -34,7 +35,7 @@ class SearchController:
         self._vector: list[tuple[Document, float]] = []
         self._reranked: list[tuple[Document, float]] | None = None
         self._metadata: dict = {}
-        self._filter_doc_id: str | None = None  # None = no filter (search all)
+        self._filter: SearchFilter = SearchFilter()
 
     # ------------------------------------------------------------------
     # Read-only state accessors
@@ -58,9 +59,24 @@ class SearchController:
         return {doc.metadata.get("chunk_id") for doc, _ in (self._reranked or [])}
 
     @property
+    def filter(self) -> SearchFilter:
+        """Active SearchFilter (all-None = no filtering)."""
+        return self._filter
+
+    @property
     def filter_doc_id(self) -> str | None:
-        """Active doc_id filter, or None when filtering is disabled."""
-        return self._filter_doc_id
+        """Backward-compatible: active source_id constraint, or None."""
+        return self._filter.source_id
+
+    @property
+    def filter_active(self) -> bool:
+        """True when at least one filter dimension is constrained."""
+        return not self._filter.is_empty()
+
+    @property
+    def filter_summary(self) -> str:
+        """Short human-readable description of active constraints."""
+        return self._filter.summary()
 
     # ------------------------------------------------------------------
     # Actions (state mutations)
@@ -86,8 +102,8 @@ class SearchController:
             return "Query is empty."
 
         log.info(
-            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter_doc_id=%s",
-            query, k, fetch_k, use_rerank, self._filter_doc_id,
+            "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s  filter=%s",
+            query, k, fetch_k, use_rerank, self._filter.summary(),
         )
         self._vector = []
         self._reranked = None
@@ -96,7 +112,7 @@ class SearchController:
         try:
             result = self._client.search_for_debug(
                 query, k=k, fetch_k=fetch_k, use_rerank=use_rerank,
-                doc_id=self._filter_doc_id,
+                search_filter=self._filter if self.filter_active else None,
             )
         except Exception as e:
             log.error("Search failed: %s", e, exc_info=True)
@@ -129,10 +145,24 @@ class SearchController:
             doc.metadata.get("chunk_id"), score_key, score,
         )
 
-    def set_filter(self, doc_id: str | None) -> None:
-        """Set the active doc_id filter. Pass None to disable filtering."""
-        self._filter_doc_id = doc_id
-        log.info("filter set: doc_id=%s", doc_id)
+    def set_filter(self, f: SearchFilter) -> None:
+        """Replace the active filter entirely."""
+        self._filter = f
+        log.info("filter set: %s", f.summary())
+
+    def set_filter_field(self, field: str, value: str | None) -> None:
+        """Set a single filter dimension without touching the others.
+
+        *value* is normalised to None when empty so is_empty() stays accurate.
+        """
+        normalised = (value or "").strip() or None
+        setattr(self._filter, field, normalised)
+        log.debug("filter field %s = %r  (full: %s)", field, normalised, self._filter.summary())
+
+    def clear_filter(self) -> None:
+        """Remove all filter constraints."""
+        self._filter = SearchFilter()
+        log.info("filter cleared")
 
     def list_doc_ids(self) -> list[str]:
         """Return all distinct doc_id values from the Chroma collection."""
@@ -140,6 +170,27 @@ class SearchController:
             return self._client.list_doc_ids()
         except Exception as e:
             log.error("list_doc_ids failed: %s", e)
+            return []
+
+    def list_workspaces(self) -> list[str]:
+        try:
+            return self._client.list_workspaces()
+        except Exception as e:
+            log.error("list_workspaces failed: %s", e)
+            return []
+
+    def list_document_types(self) -> list[str]:
+        try:
+            return self._client.list_document_types()
+        except Exception as e:
+            log.error("list_document_types failed: %s", e)
+            return []
+
+    def list_tags(self) -> list[str]:
+        try:
+            return self._client.list_tags()
+        except Exception as e:
+            log.error("list_tags failed: %s", e)
             return []
 
     # ------------------------------------------------------------------
