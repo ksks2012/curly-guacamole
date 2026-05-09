@@ -169,6 +169,24 @@ class NotionClient:
         )
 
     # ------------------------------------------------------------------
+    # Connection test
+    # ------------------------------------------------------------------
+
+    def test_connection(self) -> dict:
+        """Call GET /v1/users/me to verify the token is valid.
+
+        Returns the raw API response dict on success.
+        Raises requests.HTTPError on authentication failure (HTTP 401/403).
+        """
+        result = self._get("/users/me")
+        log.info(
+            "Notion token OK — bot name: %s  id: %s",
+            result.get("name", "?"),
+            result.get("id", "?"),
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Low-level HTTP with retry
     # ------------------------------------------------------------------
 
