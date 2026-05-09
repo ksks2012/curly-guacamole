@@ -138,6 +138,18 @@ class AppConfig:
     def test_search(self) -> str:
         return self._data.get("test_search", "test")
 
+    # --- Knowledge / Notion ---
+
+    @property
+    def raw_db_path(self) -> str:
+        """Path to the SQLite raw storage database (Step 0.3)."""
+        return self._abspath(self._data.get("raw_db_path", "./my_db/raw.db"))
+
+    @property
+    def notion_token(self) -> str:
+        """Notion integration secret token (empty string = Notion disabled)."""
+        return self._data.get("notion_token", "")
+
     # --- Logging ---
 
     @property
