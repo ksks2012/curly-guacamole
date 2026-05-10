@@ -1,139 +1,209 @@
 """
-Test Notion token via GET /v1/users/me.
+Notion API endpoint verification script.
+
+Tests each API endpoint used by the sync pipeline in order:
+    1. GET  /v1/users/me                   — token validity
+    2. GET  /v1/databases/{id}             — database metadata + data_source_id
+    3. POST /v1/data_sources/{id}/query    — page listing
+    4. GET  /v1/pages/{id}/markdown        — page content as Markdown
+    5. GET  /v1/blocks/{id}/children       — first level of block tree
+
+IDs are resolved in this priority order:
+    CLI argument  >  etc/config.yaml  >  auto-resolved from a previous step
+
+Responses are saved to ./data/ for offline inspection and test fixtures.
 
 Usage:
-    python testing/test_notion_token.py <token>
-    # or set NOTION_TOKEN env var and run without argument
+    python testing/testing_notion_api.py [database_id [data_source_id [page_id [block_id]]]]
 """
 
-import os
+import json
 import sys
-import requests
+from pathlib import Path
 
+from utils.config import AppConfig
+from utils.logger import AppLogger
 from rag.ingest.notion.client import NotionClient
 
-def retrieve_database(token: str, database_id: str):
-    # ./data/database.json
-    url = f"https://api.notion.com/v1/databases/{database_id}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Notion-Version": "2026-03-11",
-        "Content-Type": "application/json"
-    }
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
-    return res.json()
+_DATA_DIR = Path("data")
+_PREVIEW_LEN = 400
 
-def query_data_source(token: str, data_source_id: str):
-    # ./data/data_source.json
-    url = f"https://api.notion.com/v1/data_sources/{data_source_id}/query"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Notion-Version": "2026-03-11",
-        "Content-Type": "application/json"
-    }
-    payload = {}
-    res = requests.post(url, headers=headers, json=payload)
-    res.raise_for_status()
-    return res.json()
 
-def retrieve_page_as_markdown(token: str, page_id: str):
-    # ./data/page_markdown.json
-    url = f"https://api.notion.com/v1/pages/{page_id}/markdown"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Notion-Version": "2026-03-11"
-    }
+def _save(filename: str, data: dict | list | str) -> None:
+    """Pretty-print *data* as JSON and write it to ./data/{filename}."""
+    _DATA_DIR.mkdir(exist_ok=True)
+    path = _DATA_DIR / filename
+    if isinstance(data, (dict, list)):
+        text = json.dumps(data, ensure_ascii=False, indent=4)
+    else:
+        text = str(data)
+    path.write_text(text, encoding="utf-8")
+    print(f"    saved → {path}")
 
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
-    return res.text
 
-def retrieve_block_children(token: str, block_id: str):
-    # page_id also works for block_id since pages are blocks in Notion's data model
-    # ./data/block_children.json
-    url = f"https://api.notion.com/v1/blocks/{block_id}/children"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Notion-Version": "2026-03-11"
-    }
+def _section(title: str) -> None:
+    print(f"\n--- {title} ---")
 
-    res = requests.get(url, headers=headers)
-    res.raise_for_status()
-    return res.json()
 
-def main():
-    token = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("NOTION_TOKEN", "")
-    database_id = sys.argv[2] if len(sys.argv) > 2 else os.getenv("NOTION_DATABASE_ID", "")
+def _ok(msg: str) -> None:
+    print(f"  [PASS] {msg}")
 
+
+def _fail(msg: str, exc: Exception) -> None:
+    print(f"  [FAIL] {msg}: {exc}")
+
+
+def main() -> None:
+    config = AppConfig()
+    AppLogger.setup(level="WARNING")  # suppress INFO logs for cleaner output
+
+    token = config.notion_token
     if not token:
-        print("Usage: python testing/test_notion_token.py <token>")
-        print("       or set NOTION_TOKEN environment variable")
+        print("ERROR: notion_token is not set in etc/config.yaml")
         sys.exit(1)
+
+    # IDs: CLI args take priority over config; later steps auto-fill from responses
+    database_id    = sys.argv[1] if len(sys.argv) > 1 else config.notion_database_id
+    data_source_id = sys.argv[2] if len(sys.argv) > 2 else config.notion_data_source_id
+    page_id        = sys.argv[3] if len(sys.argv) > 3 else ""
+    block_id       = sys.argv[4] if len(sys.argv) > 4 else ""
+
+    print(f"token          : {token[:12]}...")
+    print(f"database_id    : {database_id or '(not set)'}")
+    print(f"data_source_id : {data_source_id or '(not set)'}")
 
     client = NotionClient(token)
+    failures: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Step 1: Token — GET /v1/users/me
+    # ------------------------------------------------------------------
+    _section("Step 1: token  GET /v1/users/me")
     try:
-        result = client.test_connection()
-        print("Connection OK")
-        print(f"  type : {result.get('type', '?')}")
-        print(f"  id   : {result.get('id', '?')}")
-        print(f"  name : {result.get('name', '?')}")
-        bot = result.get("bot", {})
+        me = client.test_connection()
+        _save("me.json", me)
+        bot   = me.get("bot", {})
         owner = bot.get("owner", {})
+        print(f"  type : {me.get('type', '?')}")
+        print(f"  id   : {me.get('id', '?')}")
+        print(f"  name : {me.get('name', '?')}")
         print(f"  owner: {owner.get('type', '?')}")
+        _ok("token is valid")
     except Exception as exc:
-        print(f"Connection FAILED: {exc}")
-        sys.exit(1)
+        _fail("token check", exc)
+        sys.exit(1)  # no point continuing without a valid token
 
-    # obtain data_source_id for query test
-    try:
-        print("\nTesting database properties retrieval...")
-        database_data = retrieve_database(token, database_id)
-        print(f"Retrieved database properties: {database_data}")
-    except Exception as exc:
-        print(f"Database properties retrieval FAILED: {exc}")
-        sys.exit(1)
+    # ------------------------------------------------------------------
+    # Step 2: Database — GET /v1/databases/{id}
+    # ------------------------------------------------------------------
+    _section("Step 2: database  GET /v1/databases/{id}")
+    if not database_id:
+        print("  SKIP — notion_database_id not set in config or CLI")
+    else:
+        try:
+            db = client.get_database(database_id)
+            _save("database.json", db)
+            title   = "".join(t.get("plain_text", "") for t in db.get("title", []))
+            sources = db.get("data_sources", [])
+            print(f"  title       : {title!r}")
+            print(f"  data_sources: {[s['id'] for s in sources]}")
+            # Auto-fill data_source_id from the first entry when not already set
+            if not data_source_id and sources:
+                data_source_id = sources[0]["id"]
+                print(f"  → resolved data_source_id: {data_source_id}")
+            _ok("database retrieved")
+        except Exception as exc:
+            _fail("database retrieval", exc)
+            failures.append("database")
 
-    # obtain page_id for markdown retrieval test
-    try:
-        print("\nTesting data source query...")
-        data_source_id = sys.argv[3] if len(sys.argv) > 3 else os.getenv("NOTION_DATA_SOURCE_ID", "")
-        if not data_source_id:
-            print("Usage: python testing/test_notion_token.py <token> <database_id> <data_source_id>")
-            print("       or set NOTION_DATA_SOURCE_ID environment variable")
-            sys.exit(1)
-        data_source_data = query_data_source(token, data_source_id)
-        print(f"Retrieved data from data source: {data_source_data}")
-    except Exception as exc:
-        print(f"Data source query FAILED: {exc}")
-        sys.exit(1)
+    # ------------------------------------------------------------------
+    # Step 3: Data source query — POST /v1/data_sources/{id}/query
+    # ------------------------------------------------------------------
+    _section("Step 3: data source query  POST /v1/data_sources/{id}/query")
+    if not data_source_id:
+        print("  SKIP — data_source_id not available")
+    else:
+        try:
+            batch, next_cursor = next(iter(client.iter_data_source_pages(data_source_id)))
+            _save("data_source.json", {
+                "object":      "list",
+                "results":     batch,
+                "next_cursor": next_cursor,
+                "has_more":    next_cursor is not None,
+            })
+            print(f"  pages in first batch: {len(batch)}")
+            for p in batch:
+                props      = p.get("properties", {})
+                page_title = ""
+                for prop in props.values():
+                    if prop.get("type") == "title":
+                        page_title = "".join(
+                            t.get("plain_text", "") for t in prop.get("title", [])
+                        )
+                        break
+                print(f"    - {p['id']}  {page_title!r}")
+            # Auto-fill page_id from first result when not already set
+            if not page_id and batch:
+                page_id = batch[0]["id"]
+                print(f"  → using page_id: {page_id}")
+            _ok(f"data source returned {len(batch)} page(s)")
+        except Exception as exc:
+            _fail("data source query", exc)
+            failures.append("data_source")
 
-    # obtain page's markdown content
-    try:
-        print("\nTesting page markdown retrieval...")
-        page_id = sys.argv[4] if len(sys.argv) > 4 else os.getenv("NOTION_PAGE_ID", "")
-        if not page_id:
-            print("Usage: python testing/test_notion_token.py <token> <database_id> <data_source_id> <page_id>")
-            print("       or set NOTION_PAGE_ID environment variable")
-            sys.exit(1)
-        markdown = retrieve_page_as_markdown(token, page_id)
-        print(f"Retrieved markdown content for page {page_id}:\n{markdown[:500]}...")  # print first 500 chars
-    except Exception as exc:
-        print(f"Page markdown retrieval FAILED: {exc}")
-        sys.exit(1)
+    # ------------------------------------------------------------------
+    # Step 4: Page markdown — GET /v1/pages/{id}/markdown
+    # ------------------------------------------------------------------
+    _section("Step 4: page markdown  GET /v1/pages/{id}/markdown")
+    if not page_id:
+        print("  SKIP — page_id not available (provide as CLI arg or set data_source_id)")
+    else:
+        try:
+            markdown = client.get_page_markdown(page_id)
+            _save("page_markdown.json", {"page_id": page_id, "markdown": markdown})
+            preview = markdown[:_PREVIEW_LEN].replace("\n", " ")
+            print(f"  page_id : {page_id}")
+            print(f"  chars   : {len(markdown)}")
+            print(f"  preview : {preview}...")
+            # Auto-fill block_id from page_id (pages are valid block IDs)
+            if not block_id:
+                block_id = page_id
+            _ok("markdown retrieved")
+        except Exception as exc:
+            _fail("markdown retrieval", exc)
+            failures.append("markdown")
 
-    try:
-        print("\nTesting block children retrieval...")
-        block_id = sys.argv[5] if len(sys.argv) > 5 else os.getenv("NOTION_BLOCK_ID", "")
-        if not block_id:
-            print("Usage: python testing/test_notion_token.py <token> <database_id> <data_source_id> <page_id> <block_id>")
-            print("       or set NOTION_BLOCK_ID environment variable")
-            sys.exit(1)
-        block_children = retrieve_block_children(token, block_id)
-        print(f"Retrieved children for block {block_id}: {block_children}")
-    except Exception as exc:
-        print(f"Block children retrieval FAILED: {exc}")
+    # ------------------------------------------------------------------
+    # Step 5: Block children — GET /v1/blocks/{id}/children
+    # ------------------------------------------------------------------
+    _section("Step 5: block children  GET /v1/blocks/{id}/children")
+    if not block_id:
+        print("  SKIP — block_id not available")
+    else:
+        try:
+            first_batch = next(iter(client.iter_block_children(block_id)), [])
+            _save("block_children.json", {"block_id": block_id, "results": first_batch})
+            print(f"  block_id : {block_id}")
+            print(f"  children : {len(first_batch)}")
+            for blk in first_batch[:5]:
+                print(f"    - [{blk.get('type', '?'):25s}]  {blk.get('id', '?')}")
+            if len(first_batch) > 5:
+                print(f"    ... and {len(first_batch) - 5} more")
+            _ok(f"block children retrieved ({len(first_batch)} items)")
+        except Exception as exc:
+            _fail("block children retrieval", exc)
+            failures.append("block_children")
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    print()
+    if failures:
+        print(f"FAILED steps: {', '.join(failures)}")
         sys.exit(1)
+    else:
+        print("All steps passed.")
+
 
 if __name__ == "__main__":
     main()
