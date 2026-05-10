@@ -49,6 +49,18 @@ def retrieve_page_as_markdown(token: str, page_id: str):
     res.raise_for_status()
     return res.text
 
+def retrieve_block_children(token: str, block_id: str):
+    # page_id also works for block_id since pages are blocks in Notion's data model
+    # ./data/block_children.json
+    url = f"https://api.notion.com/v1/blocks/{block_id}/children"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2026-03-11"
+    }
+
+    res = requests.get(url, headers=headers)
+    res.raise_for_status()
+    return res.json()
 
 def main():
     token = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("NOTION_TOKEN", "")
@@ -108,6 +120,19 @@ def main():
         print(f"Retrieved markdown content for page {page_id}:\n{markdown[:500]}...")  # print first 500 chars
     except Exception as exc:
         print(f"Page markdown retrieval FAILED: {exc}")
+        sys.exit(1)
+
+    try:
+        print("\nTesting block children retrieval...")
+        block_id = sys.argv[5] if len(sys.argv) > 5 else os.getenv("NOTION_BLOCK_ID", "")
+        if not block_id:
+            print("Usage: python testing/test_notion_token.py <token> <database_id> <data_source_id> <page_id> <block_id>")
+            print("       or set NOTION_BLOCK_ID environment variable")
+            sys.exit(1)
+        block_children = retrieve_block_children(token, block_id)
+        print(f"Retrieved children for block {block_id}: {block_children}")
+    except Exception as exc:
+        print(f"Block children retrieval FAILED: {exc}")
         sys.exit(1)
 
 if __name__ == "__main__":
