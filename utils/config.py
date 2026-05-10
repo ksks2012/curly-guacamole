@@ -150,6 +150,27 @@ class AppConfig:
         """Notion integration secret token (empty string = Notion disabled)."""
         return self._data.get("notion_token", "")
 
+    @property
+    def notion_workspace_id(self) -> str:
+        """Logical workspace name used when creating a Workspace model."""
+        return self._data.get("notion_workspace_id", "")
+
+    @property
+    def notion_database_id(self) -> str:
+        """Notion database UUID (required by NotionClient.get_database())."""
+        return self._data.get("notion_database_id", "")
+
+    @property
+    def notion_data_source_id(self) -> str:
+        """Notion data source UUID.
+
+        When set, the sync pipeline queries pages via
+        POST /v1/data_sources/{id}/query directly, skipping the database
+        lookup step.  Obtain it from ``NotionClient.get_database()``'s
+        ``data_sources[0]["id"]`` field.
+        """
+        return self._data.get("notion_data_source_id", "")
+
     # --- Logging ---
 
     @property
