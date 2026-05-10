@@ -10,3 +10,4 @@ pyyaml
 sentence-transformers
 nicegui
 rank-bm25
+requests
