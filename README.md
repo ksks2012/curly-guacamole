@@ -6,13 +6,16 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 
 ## Features
 
-- **PDF ingestion** with deterministic chunking and enriched metadata
-- **Web-based upload** — upload and index PDFs directly from the dashboard
+- **Multi-source ingestion** — PDF, Markdown, plain-text, and **Notion** pages
+- **Notion sync** — incremental sync via data source query + Markdown endpoint; content-hash-based change detection skips unchanged pages
+- **Web-based upload** — upload and index files directly from the dashboard
 - **MMR retrieval** to balance relevance and diversity
+- **Hybrid search** — vector similarity fused with BM25 via Reciprocal Rank Fusion (RRF)
 - **Re-ranking** (cross-encoder or LLM-based, swappable via config)
 - **Query expansion** — generates alternative phrasings to broaden recall
 - **Citation-grounded answers** — LLM is forced to cite `[page N, filename]`
 - **Incremental indexing** via LangChain `index()` + SQLite record manager (no duplicates on re-run)
+- **Raw storage layer** — SQLite-backed store for pages and blocks, enabling re-embedding without re-fetching from Notion
 - **Document-level filtering** — scope search to a specific `doc_id` from the dashboard
 
 ## Requirements
@@ -44,13 +47,21 @@ api_key:     "sk-no-key-required"
 llm_kwargs:  {}
 
 # --- Upload ---
-upload_dir: "./data/uploads"      # directory where uploaded PDFs are saved
+upload_dir: "./data/uploads"      # directory where uploaded files are saved
 
 # --- Vector store ---
 persist_directory: "./my_db"
 setup_rag_collection: "rag_collection"
 db_url: "sqlite:///my_db/record_manager_cache.sql"
 batch_limit: 256          # chunk count threshold for switching indexing strategy
+
+# --- Raw storage (Notion sync) ---
+raw_db_path: "./my_db/raw.db"
+
+# --- Notion ---
+# notion_token: "secret_..."          # Notion integration secret
+# notion_workspace_id: "My Workspace" # logical workspace name (free string)
+# notion_database_id:  "My Database"  # Notion database title or UUID
 
 # --- Reranker ---
 reranker_type:  "cross_encoder"   # "cross_encoder" | "llm" | "none"
@@ -81,6 +92,38 @@ python main.py
 
 `main.py` will answer the question in `test_query` using the indexed Chroma collection.
 To index a PDF first, uncomment `client.add_pdf(config.pdf_path)` in `main.py`.
+
+### Notion sync (programmatic)
+
+```python
+from rag.knowledge.models import Workspace
+from rag.knowledge.store import RawStore
+from rag.ingest.notion.client import NotionClient
+from rag.ingest.notion.sync import NotionSyncPipeline
+
+# 1. Resolve the data_source_id from your Notion database
+client = NotionClient(token="secret_...")
+db = client.get_database("your-database-uuid")
+data_source_id = db["data_sources"][0]["id"]
+
+# 2. Set up storage
+store = RawStore("./my_db/raw.db")
+workspace = Workspace.new("My Workspace")
+
+# 3. Run sync
+pipeline = NotionSyncPipeline(
+    token="secret_...",
+    workspace=workspace,
+    store=store,
+    data_source_id=data_source_id,   # omit to fall back to /v1/search
+    full_sync=False,                  # True to ignore stored cursor
+)
+result = pipeline.sync()
+print(result.as_dict())
+# {"pages_seen": 42, "pages_updated": 3, "pages_skipped": 39, "errors": 0}
+```
+
+The pipeline stores each page's Markdown content (fetched from `/v1/pages/{id}/markdown`) in the raw SQLite store. Subsequent runs skip pages whose content hash has not changed.
 
 ### Debug dashboard
 
@@ -135,28 +178,48 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 ```
 .
 ├── cmd/
-│   └── dashboard.py          # NiceGUI debug dashboard (Search + Index tabs)
+│   └── dashboard.py              # NiceGUI debug dashboard (Search + Index tabs)
 ├── ui/
-│   ├── search_controller.py  # Search tab logic (state, search, filter)
-│   └── index_controller.py   # Index tab logic (save PDF, embed, list docs)
+│   ├── search_controller.py      # Search tab logic (state, search, filter)
+│   └── index_controller.py       # Index tab logic (save file, embed, list docs)
 ├── etc/
-│   └── config.yaml           # All runtime settings
+│   └── config.yaml               # All runtime settings
 ├── rag/
-│   ├── __init__.py
-│   ├── client.py             # LocalLlamaClient — coordinates all RAG components
-│   ├── engine.py             # RAGEngine — query expansion, retrieval, rerank, generation
-│   ├── indexer.py            # Indexer — SQLRecordManager lifecycle and document ingestion
-│   ├── prompt.py             # RAG_PROMPT, QUERY_EXPANSION_PROMPT
-│   └── reranker.py           # BaseReranker, CrossEncoderReranker, LLMReranker, RerankerFactory
+│   ├── client.py                 # LocalLlamaClient — coordinates all RAG components
+│   ├── engine.py                 # RAGEngine — query expansion, retrieval, rerank, generation
+│   ├── indexer.py                # Indexer — SQLRecordManager lifecycle and document ingestion
+│   ├── prompt.py                 # RAG_PROMPT, QUERY_EXPANSION_PROMPT
+│   ├── reranker.py               # BaseReranker, CrossEncoderReranker, LLMReranker, RerankerFactory
+│   ├── ingest/
+│   │   ├── chunker.py            # Chunking strategies: recursive / heading-aware / semantic
+│   │   ├── document_ingester.py  # Unified ingestion entry point (PDF, MD, TXT)
+│   │   ├── schema.py             # Canonical chunk metadata schema
+│   │   ├── strategies.py         # ChunkStrategy enum + auto-selection logic
+│   │   ├── notion/
+│   │   │   ├── client.py         # NotionClient — REST API wrapper (auth, pagination, retry)
+│   │   │   └── sync.py           # NotionSyncPipeline — incremental page sync to RawStore
+│   │   └── parsers/
+│   │       ├── pdf.py            # PDF → Documents (page-level)
+│   │       ├── markdown.py       # Markdown → Documents (heading-section-level)
+│   │       └── text.py           # Plain-text → Documents
+│   ├── knowledge/
+│   │   ├── models.py             # Domain models: Workspace, Page, Block, Chunk, DocumentVersion
+│   │   ├── metadata.py           # ChunkMetadata — canonical Chroma metadata schema
+│   │   └── store.py              # RawStore — SQLite raw storage layer
+│   └── retrieval/
+│       ├── bm25.py               # BM25Index + RRF fusion
+│       └── filters.py            # SearchFilter — Chroma where-clause builder
 ├── utils/
-│   ├── __init__.py
-│   ├── config.py             # AppConfig — typed properties over config.yaml
-│   ├── file_processor.py     # PDF chunking, YAML / JSON / CSV helpers
-│   └── logger.py             # AppLogger — centralised logging setup
+│   ├── config.py                 # AppConfig — typed properties over config.yaml
+│   ├── file_processor.py         # PDF chunking, YAML / JSON / CSV helpers
+│   └── logger.py                 # AppLogger — centralised logging setup
 ├── data/
-│   └── uploads/              # Uploaded PDFs (path configurable via upload_dir)
-├── my_db/                    # Chroma vector store (auto-created)
-├── main.py                   # Entry point
+│   └── uploads/                  # Uploaded files (path configurable via upload_dir)
+├── my_db/
+│   ├── chroma.sqlite3            # Chroma vector store (auto-created)
+│   ├── record_manager_cache.sql  # LangChain record manager
+│   └── raw.db                    # Raw storage layer for Notion sync (auto-created)
+├── main.py                       # Entry point
 ├── setup.py
 └── requirements.txt
 ```
@@ -170,13 +233,36 @@ query
   │
   ▼
 MMR vector search  (fetch_k candidates per phrasing)
+  +
+BM25 keyword search
   │
-de-duplicate by chunk_id
+RRF fusion + de-duplicate by chunk_id
   │
   ▼
 reranker  (cross-encoder or LLM → top k)
   │
   ▼
 citation-grounded LLM answer  [page N, filename]
+```
+
+## Notion Sync Pipeline
+
+```
+NotionClient.get_database(database_id)
+  │  resolves data_source_id from db["data_sources"]
+  ▼
+NotionClient.iter_data_source_pages(data_source_id)
+  │  POST /v1/data_sources/{id}/query  (paginated, cursor-resumable)
+  │  falls back to iter_all_pages() if data_source_id not provided
+  ▼
+for each page:
+  NotionClient.get_page_markdown(page_id)
+    │  GET /v1/pages/{id}/markdown
+    ▼
+  SHA-256(markdown) == stored hash?
+    yes → skip
+    no  → upsert Page + Block(LOCAL_PAGE_TEXT) + DocumentVersion → RawStore
+  │
+  cursor saved after every batch (supports partial-run resume)
 ```
 
