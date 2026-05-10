@@ -2,8 +2,8 @@
 Step 0.3 — Notion Sync Pipeline.
 
 Orchestrates:
-    1. List all pages via Notion search API (incremental using next_cursor)
-    2. For each page: fetch all blocks recursively
+    1. List all pages via data source query (or /search as fallback)
+    2. For each page: fetch full content as Markdown via /v1/pages/{id}/markdown
     3. Compute content_hash; skip pages whose hash has not changed
     4. Store raw Page + Block data in RawStore (SQLite)
     5. Record a DocumentVersion for change tracking
@@ -18,8 +18,9 @@ Usage
 
     pipeline = NotionSyncPipeline(
         token="secret_...",
-        workspace=workspace,     # rag.knowledge.models.Workspace
-        store=raw_store,         # rag.knowledge.store.RawStore
+        workspace=workspace,       # rag.knowledge.models.Workspace
+        store=raw_store,           # rag.knowledge.store.RawStore
+        data_source_id="...",      # obtain from NotionClient.get_database()
     )
     result = pipeline.sync()
     print(result)
@@ -28,12 +29,15 @@ Usage
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Callable
 
 from utils.logger import AppLogger
+
 from rag.knowledge.models import (
     Block,
+    BlockType,
     ChangeType,
     DocumentVersion,
     Page,
@@ -44,8 +48,9 @@ from rag.ingest.notion.client import NotionClient
 
 log = AppLogger.get(__name__)
 
-# Cursor key prefix stored in sync_cursors table
-_CURSOR_KEY = "notion_sync:{workspace_id}"
+# Cursor key prefixes stored in sync_cursors table
+_CURSOR_KEY_SEARCH      = "notion_sync:{workspace_id}"
+_CURSOR_KEY_DATA_SOURCE = "notion_datasource:{data_source_id}"
 
 
 @dataclass
@@ -69,13 +74,16 @@ class NotionSyncPipeline:
     """Sync Notion pages into the Raw Storage Layer.
 
     Args:
-        token         : Notion integration secret.
-        workspace     : Target Workspace domain model.
-        store         : RawStore instance to persist into.
-        progress_cb   : Optional callback ``(pages_seen: int, total: int | None)``
-                        called after each page is processed.
-        full_sync     : When True, ignore stored cursor and start from the
-                        beginning (re-processes all pages).
+        token          : Notion integration secret.
+        workspace      : Target Workspace domain model.
+        store          : RawStore instance to persist into.
+        data_source_id : Data source UUID (from ``NotionClient.get_database()``).
+                         When provided, pages are listed via
+                         POST /v1/data_sources/{id}/query instead of /v1/search.
+        progress_cb    : Optional callback ``(pages_seen: int, total: int | None)``
+                         called after each page is processed.
+        full_sync      : When True, ignore stored cursor and start from the
+                         beginning (re-processes all pages).
     """
 
     def __init__(
@@ -83,14 +91,16 @@ class NotionSyncPipeline:
         token: str,
         workspace: Workspace,
         store: RawStore,
+        data_source_id: str | None = None,
         progress_cb: Callable[[int, int | None], None] | None = None,
         full_sync: bool = False,
     ) -> None:
-        self._client    = NotionClient(token)
-        self._workspace = workspace
-        self._store     = store
-        self._progress_cb = progress_cb
-        self._full_sync = full_sync
+        self._client         = NotionClient(token)
+        self._workspace      = workspace
+        self._store          = store
+        self._data_source_id = data_source_id
+        self._progress_cb    = progress_cb
+        self._full_sync      = full_sync
 
     # ------------------------------------------------------------------
     # Public API
@@ -99,22 +109,32 @@ class NotionSyncPipeline:
     def sync(self) -> SyncResult:
         """Run the sync pipeline and return a SyncResult."""
         log.info(
-            "NotionSyncPipeline.sync: workspace=%r  full_sync=%s",
-            self._workspace.name, self._full_sync,
+            "NotionSyncPipeline.sync: workspace=%r  data_source=%s  full_sync=%s",
+            self._workspace.name,
+            self._data_source_id or "<search>",
+            self._full_sync,
         )
         self._store.upsert_workspace(self._workspace)
 
-        cursor_key = _CURSOR_KEY.format(workspace_id=self._workspace.id)
-        start_cursor = (
-            None
-            if self._full_sync
-            else self._store.get_cursor(cursor_key)
-        )
-        log.info("  start_cursor: %s", start_cursor or "<start>")
+        if self._data_source_id:
+            cursor_key = _CURSOR_KEY_DATA_SOURCE.format(
+                data_source_id=self._data_source_id
+            )
+            page_iter = self._client.iter_data_source_pages(
+                self._data_source_id,
+                start_cursor=None if self._full_sync else self._store.get_cursor(cursor_key),
+            )
+        else:
+            cursor_key = _CURSOR_KEY_SEARCH.format(workspace_id=self._workspace.id)
+            page_iter = self._client.iter_all_pages(
+                start_cursor=None if self._full_sync else self._store.get_cursor(cursor_key),
+            )
+
+        log.info("  cursor_key: %s", cursor_key)
 
         result = SyncResult()
 
-        for raw_pages_batch, next_cursor in self._client.iter_all_pages(start_cursor):
+        for raw_pages_batch, next_cursor in page_iter:
             for raw_page in raw_pages_batch:
                 result.pages_seen += 1
                 try:
@@ -165,12 +185,11 @@ class NotionSyncPipeline:
             workspace_name=self._workspace.name,
         )
 
-        # Fetch all blocks
-        raw_blocks = self._client.get_all_blocks(notion_page_id)
-        blocks: list[Block] = NotionClient.raw_blocks_to_models(raw_blocks, page.id)
+        # Fetch page content as Markdown
+        markdown = self._client.get_page_markdown(notion_page_id)
 
-        # Compute content hash from block text
-        new_hash = DocumentVersion.compute_hash(blocks) if blocks else ""
+        # Compute content hash from markdown text
+        new_hash = hashlib.sha256(markdown.encode()).hexdigest() if markdown else ""
 
         # Change detection: compare against stored hash
         stored_hash = self._store.get_content_hash(page.id)
@@ -180,6 +199,19 @@ class NotionSyncPipeline:
 
         # Determine change type
         change_type = ChangeType.CREATED if stored_hash is None else ChangeType.UPDATED
+
+        # Represent the full markdown content as a single block
+        blocks: list[Block] = []
+        if markdown:
+            blocks = [
+                Block.new(
+                    page_id=page.id,
+                    block_type=BlockType.LOCAL_PAGE_TEXT,
+                    content=markdown,
+                    order=0,
+                    metadata={"source": "notion_markdown"},
+                )
+            ]
 
         # Persist page + blocks
         self._store.upsert_page(page, content_hash=new_hash)

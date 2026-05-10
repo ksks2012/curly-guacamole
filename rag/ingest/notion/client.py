@@ -30,7 +30,7 @@ from rag.knowledge.models import Block, BlockType, Page, Workspace
 log = AppLogger.get(__name__)
 
 _BASE_URL = "https://api.notion.com/v1"
-_NOTION_VERSION = "2022-06-28"
+_NOTION_VERSION = "2026-03-11"
 _MAX_RETRIES = 5
 
 
@@ -217,6 +217,18 @@ class NotionClient:
         raise RuntimeError(f"POST {url} failed after {_MAX_RETRIES} retries (rate limit)")
 
     # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+
+    def get_database(self, database_id: str) -> dict:
+        """Fetch a Notion database object (GET /v1/databases/{id}).
+
+        Returns the raw API response dict, which includes the ``data_sources``
+        array needed to obtain a ``data_source_id`` for page queries.
+        """
+        return self._get(f"/databases/{database_id}")
+
+    # ------------------------------------------------------------------
     # Pages
     # ------------------------------------------------------------------
 
@@ -255,6 +267,45 @@ class NotionClient:
     def get_page_raw(self, notion_page_id: str) -> dict:
         """Fetch a single Notion page object."""
         return self._get(f"/pages/{notion_page_id}")
+
+    def get_page_markdown(self, page_id: str) -> str:
+        """Fetch a page's full content as Markdown (GET /v1/pages/{id}/markdown).
+
+        Returns the markdown string from the ``markdown`` field of the response.
+        Raises ``requests.HTTPError`` if the page is not found or access is denied.
+        """
+        data = self._get(f"/pages/{page_id}/markdown")
+        return data.get("markdown", "")
+
+    def iter_data_source_pages(
+        self,
+        data_source_id: str,
+        start_cursor: str | None = None,
+    ) -> Iterator[tuple[list[dict], str | None]]:
+        """Yield (raw_page_list, next_cursor) pairs from a data source query.
+
+        Calls POST /v1/data_sources/{data_source_id}/query and follows
+        pagination via ``next_cursor`` until all pages are retrieved.
+
+        Args:
+            data_source_id : The data source UUID (from the database object).
+            start_cursor   : Resume pagination from this cursor value.
+        """
+        cursor = start_cursor
+        while True:
+            body: dict = {}
+            if cursor:
+                body["start_cursor"] = cursor
+
+            data = self._post(f"/data_sources/{data_source_id}/query", body)
+            results = data.get("results", [])
+            next_cursor = data.get("next_cursor")
+
+            yield results, next_cursor
+
+            if not data.get("has_more") or not next_cursor:
+                break
+            cursor = next_cursor
 
     # ------------------------------------------------------------------
     # Blocks
