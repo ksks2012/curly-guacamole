@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from utils.config import AppConfig
 from utils.logger import AppLogger
-from rag.ingest.notion.rag_client import NotionRAGClient
+from rag.ingest.notion.pipeline import NotionRAGClient
 
 
 def _server_up(base_url: str) -> bool:
