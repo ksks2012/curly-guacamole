@@ -10,6 +10,7 @@ setup(
         "langchain-openai",
         "langchain-chroma",
         "langchain-community",
+        "sqlalchemy",
         "langchain-text-splitters",
         "langchain",
         "chromadb",
