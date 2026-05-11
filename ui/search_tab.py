@@ -164,9 +164,9 @@ def build(ctrl: SearchController) -> ui.Select:
 
         with filter_panel:
             _fi_source = ui.select(
-                options=[""] + ctrl.list_doc_ids(),
+                options={"": ""} | ctrl.list_doc_title_map(),
                 value="",
-                label="Source (doc_id)",
+                label="Source (title)",
             ).classes("w-52").props("outlined dense clearable")
             _fi_workspace = ui.select(
                 options=[""] + ctrl.list_workspaces(),

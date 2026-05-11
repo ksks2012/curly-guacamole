@@ -185,6 +185,25 @@ class LocalLlamaClient:
         }
         return sorted(ids)
 
+    def list_doc_title_map(self) -> dict[str, str]:
+        """Return a {doc_id: display_title} map for all indexed documents.
+
+        *display_title* is the ``title`` metadata field when set, otherwise
+        falls back to the raw ``doc_id``.  Used by filter dropdowns that show
+        human-readable names while still filtering by doc_id.
+        """
+        result = self.db.get(include=["metadatas"])
+        mapping: dict[str, str] = {}
+        for m in (result.get("metadatas") or []):
+            if not m:
+                continue
+            doc_id = m.get("doc_id")
+            if not doc_id or doc_id in mapping:
+                continue
+            title = (m.get("title") or "").strip() or doc_id
+            mapping[doc_id] = title
+        return dict(sorted(mapping.items()))
+
     def list_field_values(self, field: str) -> list[str]:
         """Return distinct non-empty values for *field* across all indexed chunks.
 

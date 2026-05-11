@@ -176,6 +176,14 @@ class IndexController:
             log.error("list_docs failed: %s", e)
             return []
 
+    def list_docs_with_titles(self) -> list[tuple[str, str]]:
+        """Return [(doc_id, display_title), ...] for all indexed documents."""
+        try:
+            return list(self._client.list_doc_title_map().items())
+        except Exception as e:
+            log.error("list_docs_with_titles failed: %s", e)
+            return []
+
     def get_doc_info(self, doc_id: str) -> dict:
         """Return aggregated metadata for a single document.
 

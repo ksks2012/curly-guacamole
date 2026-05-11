@@ -187,13 +187,13 @@ def build(
 
         @ui.refreshable
         def render_doc_list():
-            docs = idx_ctrl.list_docs()
+            docs = idx_ctrl.list_docs_with_titles()
             if not docs:
                 ui.label("No documents indexed yet.").classes(
                     "text-gray-400 italic text-sm"
                 )
             else:
-                for doc_id in docs:
+                for doc_id, display_title in docs:
                     is_sel = _selected_doc["id"] == doc_id
                     border = (
                         "border-l-4 border-blue-400"
@@ -210,7 +210,7 @@ def build(
                             render_doc_list.refresh(),
                         ),
                     ):
-                        ui.label(doc_id).classes("text-sm font-mono text-gray-700")
+                        ui.label(display_title).classes("text-sm font-mono text-gray-700")
 
         render_doc_list()
 

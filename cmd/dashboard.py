@@ -94,7 +94,7 @@ def dashboard():
                 index_tab_ui.build(
                     _idx_ctrl, log,
                     on_doc_indexed=lambda: fi_source.set_options(
-                        [""] + _ctrl.list_doc_ids()
+                        {"": ""} | _ctrl.list_doc_title_map()
                     ),
                 )
 

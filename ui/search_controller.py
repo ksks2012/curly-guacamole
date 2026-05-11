@@ -198,6 +198,14 @@ class SearchController:
             log.error("list_doc_ids failed: %s", e)
             return []
 
+    def list_doc_title_map(self) -> dict[str, str]:
+        """Return a {doc_id: display_title} map for all indexed documents."""
+        try:
+            return self._client.list_doc_title_map()
+        except Exception as e:
+            log.error("list_doc_title_map failed: %s", e)
+            return {}
+
     def list_workspaces(self) -> list[str]:
         try:
             return self._client.list_workspaces()
