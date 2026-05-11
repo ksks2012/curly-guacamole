@@ -384,12 +384,23 @@ class NotionClient:
         created = raw.get("created_time", datetime.now(timezone.utc).isoformat())
         updated = raw.get("last_edited_time", created)
 
-        # Tags / multi-select
+        # Tags — look for the 'Tags' property explicitly first (by key name,
+        # case-insensitive), then fall back to the first multi_select found.
+        # This is robust against pages that have multiple multi_select
+        # properties (e.g. Priority, Status-as-multi-select, etc.).
+        # To support additional multi_select properties in the future, add
+        # more named lookups here before the fallback.
         tags: list[str] = []
-        for prop in props.values():
-            if prop.get("type") == "multi_select":
-                tags = [opt["name"] for opt in prop.get("multi_select", [])]
-                break
+        _tag_prop = (
+            props.get("Tags")
+            or props.get("tags")
+            or next(
+                (p for p in props.values() if p.get("type") == "multi_select"),
+                None,
+            )
+        )
+        if _tag_prop and _tag_prop.get("type") == "multi_select":
+            tags = [opt["name"] for opt in _tag_prop.get("multi_select", [])]
 
         return Page(
             id=str(uuid.uuid5(uuid.NAMESPACE_URL, source_url)),

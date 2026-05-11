@@ -178,9 +178,12 @@ def build(ctrl: SearchController) -> ui.Select:
                 value="",
                 label="Doc type",
             ).classes("w-36").props("outlined dense clearable")
-            _fi_tag    = ui.input(
-                label="Tag (substring)", placeholder="e.g. llm"
-            ).classes("w-36")
+            _fi_tag    = ui.select(
+                options=[""]
+                + ctrl.list_tags(),
+                value="",
+                label="Tags",
+            ).classes("w-40").props("outlined dense clearable")
             _fi_after  = ui.input(
                 label="Created after",  placeholder="YYYY-MM-DD"
             ).classes("w-36")
@@ -211,11 +214,8 @@ def build(ctrl: SearchController) -> ui.Select:
             _fi_doctype.on_value_change(
                 lambda e: _apply_filter_field("document_type", e.value)
             )
-            _fi_tag.on("keydown.enter",
-                lambda: _apply_filter_field("tag", _fi_tag.value)
-            )
-            _fi_tag.on("blur",
-                lambda: _apply_filter_field("tag", _fi_tag.value)
+            _fi_tag.on_value_change(
+                lambda e: _apply_filter_field("tag", e.value)
             )
             _fi_after.on("keydown.enter",
                 lambda: _apply_filter_field("created_after", _fi_after.value)
