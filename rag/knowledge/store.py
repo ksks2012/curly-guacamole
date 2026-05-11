@@ -1,5 +1,5 @@
 """
-Step 0.3 — Raw Storage Layer (SQLite).
+Raw Storage Layer (SQLite) — backed by SQLAlchemy Core.
 
 Stores the raw Notion / local-file data before it enters the vector store.
 This layer enables:
@@ -10,10 +10,11 @@ This layer enables:
 
 Schema
 ------
-    workspaces      — one row per Workspace
-    pages           — one row per Page; stores content_hash for change detection
-    blocks          — one row per Block; raw content + metadata JSON
-    sync_cursors    — stores Notion next_cursor values for incremental API polling
+    workspaces        — one row per Workspace
+    pages             — one row per Page; stores content_hash for change detection
+    blocks            — one row per Block; raw content + metadata JSON
+    document_versions — point-in-time snapshots for change tracking
+    sync_cursors      — stores Notion next_cursor values for incremental API polling
 
 All datetimes are stored as ISO-8601 UTC strings.
 JSON fields store arbitrary dicts serialised with json.dumps.
@@ -22,11 +23,27 @@ JSON fields store arbitrary dicts serialised with json.dumps.
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Generator
+
+from sqlalchemy import (
+    Column,
+    Float,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    delete,
+    event,
+    func,
+    select,
+)
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Connection, Engine
 
 from utils.logger import AppLogger
 from rag.knowledge.models import (
@@ -40,81 +57,98 @@ from rag.knowledge.models import (
 
 log = AppLogger.get(__name__)
 
-_DDL = """
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+# ---------------------------------------------------------------------------
+# Table definitions
+# ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS workspaces (
-    id                  TEXT PRIMARY KEY,
-    name                TEXT NOT NULL,
-    description         TEXT NOT NULL DEFAULT '',
-    notion_workspace_id TEXT,
-    created_at          TEXT NOT NULL,
-    metadata_json       TEXT NOT NULL DEFAULT '{}'
-);
+_meta = MetaData()
 
-CREATE TABLE IF NOT EXISTS pages (
-    id              TEXT PRIMARY KEY,
-    workspace_id    TEXT NOT NULL REFERENCES workspaces(id),
-    title           TEXT NOT NULL,
-    source_url      TEXT NOT NULL DEFAULT '',
-    document_type   TEXT NOT NULL DEFAULT 'text',
-    language        TEXT NOT NULL DEFAULT '',
-    project         TEXT NOT NULL DEFAULT '',
-    tags            TEXT NOT NULL DEFAULT '',     -- comma-joined
-    importance      REAL NOT NULL DEFAULT 0.0,
-    notion_page_id  TEXT,
-    parent_page_id  TEXT REFERENCES pages(id),
-    content_hash    TEXT NOT NULL DEFAULT '',
-    created_time    TEXT NOT NULL,
-    updated_time    TEXT NOT NULL,
-    last_synced_at  TEXT,
-    metadata_json   TEXT NOT NULL DEFAULT '{}'
-);
+_workspaces = Table(
+    "workspaces", _meta,
+    Column("id",                  String, primary_key=True),
+    Column("name",                String, nullable=False),
+    Column("description",         Text,   nullable=False, default=""),
+    Column("notion_workspace_id", String),
+    Column("created_at",          String, nullable=False),
+    Column("metadata_json",       Text,   nullable=False, default="{}"),
+)
 
-CREATE INDEX IF NOT EXISTS idx_pages_workspace   ON pages(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_pages_notion      ON pages(notion_page_id);
-CREATE INDEX IF NOT EXISTS idx_pages_hash        ON pages(content_hash);
+_pages = Table(
+    "pages", _meta,
+    Column("id",             String,  primary_key=True),
+    Column("workspace_id",   String,  nullable=False),
+    Column("title",          String,  nullable=False),
+    Column("source_url",     Text,    nullable=False, default=""),
+    Column("document_type",  String,  nullable=False, default="text"),
+    Column("language",       String,  nullable=False, default=""),
+    Column("project",        String,  nullable=False, default=""),
+    Column("tags",           Text,    nullable=False, default=""),
+    Column("importance",     Float,   nullable=False, default=0.0),
+    Column("notion_page_id", String),
+    Column("parent_page_id", String),
+    Column("content_hash",   String,  nullable=False, default=""),
+    Column("created_time",   String,  nullable=False),
+    Column("updated_time",   String,  nullable=False),
+    Column("last_synced_at", String),
+    Column("metadata_json",  Text,    nullable=False, default="{}"),
+    Index("idx_pages_workspace", "workspace_id"),
+    Index("idx_pages_notion",    "notion_page_id"),
+    Index("idx_pages_hash",      "content_hash"),
+)
 
-CREATE TABLE IF NOT EXISTS blocks (
-    id               TEXT PRIMARY KEY,
-    page_id          TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-    block_type       TEXT NOT NULL,
-    content          TEXT NOT NULL DEFAULT '',
-    block_order      INTEGER NOT NULL,
-    parent_block_id  TEXT,
-    notion_block_id  TEXT,
-    metadata_json    TEXT NOT NULL DEFAULT '{}'
-);
+_blocks = Table(
+    "blocks", _meta,
+    Column("id",              String,  primary_key=True),
+    Column("page_id",         String,  nullable=False),
+    Column("block_type",      String,  nullable=False),
+    Column("content",         Text,    nullable=False, default=""),
+    Column("block_order",     Integer, nullable=False),
+    Column("parent_block_id", String),
+    Column("notion_block_id", String),
+    Column("metadata_json",   Text,    nullable=False, default="{}"),
+    Index("idx_blocks_page",   "page_id"),
+    Index("idx_blocks_order",  "page_id", "block_order"),
+    Index("idx_blocks_notion", "notion_block_id"),
+)
 
-CREATE INDEX IF NOT EXISTS idx_blocks_page      ON blocks(page_id);
-CREATE INDEX IF NOT EXISTS idx_blocks_order     ON blocks(page_id, block_order);
-CREATE INDEX IF NOT EXISTS idx_blocks_notion    ON blocks(notion_block_id);
+_document_versions = Table(
+    "document_versions", _meta,
+    Column("id",           String,  primary_key=True),
+    Column("page_id",      String,  nullable=False),
+    Column("version",      Integer, nullable=False),
+    Column("content_hash", String,  nullable=False),
+    Column("created_at",   String,  nullable=False),
+    Column("change_type",  String,  nullable=False),
+    Column("chunk_count",  Integer, nullable=False, default=0),
+    Column("diff_summary", Text,    nullable=False, default=""),
+    UniqueConstraint("page_id", "version", name="uq_versions_page_version"),
+    Index("idx_versions_page", "page_id"),
+)
 
-CREATE TABLE IF NOT EXISTS document_versions (
-    id           TEXT PRIMARY KEY,
-    page_id      TEXT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-    version      INTEGER NOT NULL,
-    content_hash TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    change_type  TEXT NOT NULL,
-    chunk_count  INTEGER NOT NULL DEFAULT 0,
-    diff_summary TEXT NOT NULL DEFAULT '',
-    UNIQUE(page_id, version)
-);
+_sync_cursors = Table(
+    "sync_cursors", _meta,
+    Column("key",        String, primary_key=True),
+    Column("cursor",     String),
+    Column("updated_at", String, nullable=False),
+)
 
-CREATE INDEX IF NOT EXISTS idx_versions_page ON document_versions(page_id);
 
-CREATE TABLE IF NOT EXISTS sync_cursors (
-    key         TEXT PRIMARY KEY,   -- e.g. "notion_search" or workspace_id
-    cursor      TEXT,               -- Notion next_cursor (NULL = start from beginning)
-    updated_at  TEXT NOT NULL
-);
-"""
+def _make_engine(db_path: str) -> Engine:
+    """Create a SQLAlchemy engine with WAL mode and foreign-key enforcement."""
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
 
 
 class RawStore:
-    """SQLite-backed raw storage layer.
+    """SQLite-backed raw storage layer (SQLAlchemy Core).
 
     Usage
     -----
@@ -133,63 +167,43 @@ class RawStore:
     def __init__(self, db_path: str) -> None:
         path = Path(db_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._db_path = str(path)
-        self._init_schema()
-        log.info("RawStore ready at %s", self._db_path)
-
-    # ------------------------------------------------------------------
-    # Connection management
-    # ------------------------------------------------------------------
-
-    @contextmanager
-    def _conn(self) -> Generator[sqlite3.Connection, None, None]:
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def _init_schema(self) -> None:
-        with self._conn() as conn:
-            conn.executescript(_DDL)
+        self._engine = _make_engine(str(path))
+        _meta.create_all(self._engine)
+        log.info("RawStore ready at %s", path)
 
     # ------------------------------------------------------------------
     # Workspace
     # ------------------------------------------------------------------
 
     def upsert_workspace(self, ws: Workspace) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO workspaces
-                    (id, name, description, notion_workspace_id,
-                     created_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    name                = excluded.name,
-                    description         = excluded.description,
-                    notion_workspace_id = excluded.notion_workspace_id,
-                    metadata_json       = excluded.metadata_json
-                """,
-                (
-                    ws.id, ws.name, ws.description,
-                    ws.notion_workspace_id,
-                    ws.created_at.isoformat(),
-                    json.dumps(ws.metadata),
+        stmt = (
+            sqlite_insert(_workspaces)
+            .values(
+                id=ws.id,
+                name=ws.name,
+                description=ws.description,
+                notion_workspace_id=ws.notion_workspace_id,
+                created_at=ws.created_at.isoformat(),
+                metadata_json=json.dumps(ws.metadata),
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_=dict(
+                    name=ws.name,
+                    description=ws.description,
+                    notion_workspace_id=ws.notion_workspace_id,
+                    metadata_json=json.dumps(ws.metadata),
                 ),
             )
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
         log.debug("upsert_workspace: %s (%s)", ws.name, ws.id[:8])
 
     def get_workspace(self, workspace_id: str) -> Workspace | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
-            ).fetchone()
+        stmt = select(_workspaces).where(_workspaces.c.id == workspace_id)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         if not row:
             return None
         return Workspace(
@@ -202,9 +216,20 @@ class RawStore:
         )
 
     def list_workspaces(self) -> list[Workspace]:
-        with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM workspaces ORDER BY name").fetchall()
-        return [self.get_workspace(r["id"]) for r in rows]  # type: ignore[misc]
+        stmt = select(_workspaces).order_by(_workspaces.c.name)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [
+            Workspace(
+                id=r["id"],
+                name=r["name"],
+                description=r["description"] or "",
+                notion_workspace_id=r["notion_workspace_id"],
+                created_at=datetime.fromisoformat(r["created_at"]),
+                metadata=json.loads(r["metadata_json"] or "{}"),
+            )
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Page
@@ -212,89 +237,78 @@ class RawStore:
 
     def upsert_page(self, page: Page, content_hash: str = "") -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO pages
-                    (id, workspace_id, title, source_url, document_type,
-                     language, project, tags, importance, notion_page_id,
-                     parent_page_id, content_hash,
-                     created_time, updated_time, last_synced_at, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    title          = excluded.title,
-                    source_url     = excluded.source_url,
-                    document_type  = excluded.document_type,
-                    language       = excluded.language,
-                    project        = excluded.project,
-                    tags           = excluded.tags,
-                    importance     = excluded.importance,
-                    notion_page_id = excluded.notion_page_id,
-                    parent_page_id = excluded.parent_page_id,
-                    content_hash   = excluded.content_hash,
-                    updated_time   = excluded.updated_time,
-                    last_synced_at = excluded.last_synced_at,
-                    metadata_json  = excluded.metadata_json
-                """,
-                (
-                    page.id,
-                    page.workspace_id,
-                    page.title,
-                    page.source,
-                    page.document_type,
-                    page.metadata.get("language", ""),
-                    page.metadata.get("project", ""),
-                    ",".join(page.tags),
-                    page.importance,
-                    page.notion_page_id,
-                    page.parent_page_id,
-                    content_hash,
-                    page.created_time.isoformat(),
-                    page.updated_time.isoformat(),
-                    now,
-                    json.dumps(page.metadata),
+        stmt = (
+            sqlite_insert(_pages)
+            .values(
+                id=page.id,
+                workspace_id=page.workspace_id,
+                title=page.title,
+                source_url=page.source,
+                document_type=page.document_type,
+                language=page.metadata.get("language", ""),
+                project=page.metadata.get("project", ""),
+                tags=",".join(page.tags),
+                importance=page.importance,
+                notion_page_id=page.notion_page_id,
+                parent_page_id=page.parent_page_id,
+                content_hash=content_hash,
+                created_time=page.created_time.isoformat(),
+                updated_time=page.updated_time.isoformat(),
+                last_synced_at=now,
+                metadata_json=json.dumps(page.metadata),
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_=dict(
+                    title=page.title,
+                    source_url=page.source,
+                    document_type=page.document_type,
+                    language=page.metadata.get("language", ""),
+                    project=page.metadata.get("project", ""),
+                    tags=",".join(page.tags),
+                    importance=page.importance,
+                    notion_page_id=page.notion_page_id,
+                    parent_page_id=page.parent_page_id,
+                    content_hash=content_hash,
+                    updated_time=page.updated_time.isoformat(),
+                    last_synced_at=now,
+                    metadata_json=json.dumps(page.metadata),
                 ),
             )
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
         log.debug("upsert_page: %r (%s)", page.title, page.id[:8])
 
     def get_page(self, page_id: str) -> Page | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM pages WHERE id = ?", (page_id,)
-            ).fetchone()
+        stmt = select(_pages).where(_pages.c.id == page_id)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return self._row_to_page(row) if row else None
 
     def get_page_by_notion_id(self, notion_page_id: str) -> Page | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM pages WHERE notion_page_id = ?",
-                (notion_page_id,),
-            ).fetchone()
+        stmt = select(_pages).where(_pages.c.notion_page_id == notion_page_id)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         return self._row_to_page(row) if row else None
 
     def get_content_hash(self, page_id: str) -> str | None:
         """Return the stored content_hash for *page_id*, or None if not stored."""
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT content_hash FROM pages WHERE id = ?", (page_id,)
-            ).fetchone()
-        return row["content_hash"] if row else None
+        stmt = select(_pages.c.content_hash).where(_pages.c.id == page_id)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).first()
+        return row[0] if row else None
 
     def list_pages(self, workspace_id: str | None = None) -> list[Page]:
-        with self._conn() as conn:
-            if workspace_id:
-                rows = conn.execute(
-                    "SELECT * FROM pages WHERE workspace_id = ? ORDER BY title",
-                    (workspace_id,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT * FROM pages ORDER BY title"
-                ).fetchall()
-        return [self._row_to_page(r) for r in rows if r]  # type: ignore[misc]
+        stmt = select(_pages).order_by(_pages.c.title)
+        if workspace_id:
+            stmt = stmt.where(_pages.c.workspace_id == workspace_id)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_page(r) for r in rows]
 
     @staticmethod
-    def _row_to_page(row: sqlite3.Row) -> Page:
+    def _row_to_page(row) -> Page:
         meta = json.loads(row["metadata_json"] or "{}")
         return Page(
             id=row["id"],
@@ -320,52 +334,55 @@ class RawStore:
         if not blocks:
             return
         rows = [
-            (
-                b.id, b.page_id, b.block_type.value if hasattr(b.block_type, "value") else str(b.block_type),
-                b.content, b.order,
-                b.parent_block_id, b.notion_block_id,
-                json.dumps(b.metadata),
+            dict(
+                id=b.id,
+                page_id=b.page_id,
+                block_type=b.block_type.value if hasattr(b.block_type, "value") else str(b.block_type),
+                content=b.content,
+                block_order=b.order,
+                parent_block_id=b.parent_block_id,
+                notion_block_id=b.notion_block_id,
+                metadata_json=json.dumps(b.metadata),
             )
             for b in blocks
         ]
-        with self._conn() as conn:
-            conn.executemany(
-                """
-                INSERT INTO blocks
-                    (id, page_id, block_type, content, block_order,
-                     parent_block_id, notion_block_id, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    block_type      = excluded.block_type,
-                    content         = excluded.content,
-                    block_order     = excluded.block_order,
-                    parent_block_id = excluded.parent_block_id,
-                    notion_block_id = excluded.notion_block_id,
-                    metadata_json   = excluded.metadata_json
-                """,
-                rows,
-            )
+        stmt = sqlite_insert(_blocks).on_conflict_do_update(
+            index_elements=["id"],
+            set_=dict(
+                block_type=sqlite_insert(_blocks).excluded.block_type,
+                content=sqlite_insert(_blocks).excluded.content,
+                block_order=sqlite_insert(_blocks).excluded.block_order,
+                parent_block_id=sqlite_insert(_blocks).excluded.parent_block_id,
+                notion_block_id=sqlite_insert(_blocks).excluded.notion_block_id,
+                metadata_json=sqlite_insert(_blocks).excluded.metadata_json,
+            ),
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt, rows)
         log.debug("upsert_blocks: %d blocks for page %s", len(blocks), blocks[0].page_id[:8])
 
     def get_blocks(self, page_id: str) -> list[Block]:
         """Return all Blocks for *page_id* sorted by block_order."""
-        with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM blocks WHERE page_id = ? ORDER BY block_order",
-                (page_id,),
-            ).fetchall()
+        stmt = (
+            select(_blocks)
+            .where(_blocks.c.page_id == page_id)
+            .order_by(_blocks.c.block_order)
+        )
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
         return [self._row_to_block(r) for r in rows]
 
     def delete_blocks(self, page_id: str) -> int:
         """Delete all Blocks for *page_id*. Returns the number deleted."""
-        with self._conn() as conn:
-            cur = conn.execute("DELETE FROM blocks WHERE page_id = ?", (page_id,))
-            count = cur.rowcount
+        stmt = delete(_blocks).where(_blocks.c.page_id == page_id)
+        with self._engine.begin() as conn:
+            result = conn.execute(stmt)
+        count = result.rowcount
         log.debug("delete_blocks: %d removed for page %s", count, page_id[:8])
         return count
 
     @staticmethod
-    def _row_to_block(row: sqlite3.Row) -> Block:
+    def _row_to_block(row) -> Block:
         try:
             btype = BlockType(row["block_type"])
         except ValueError:
@@ -386,36 +403,37 @@ class RawStore:
     # ------------------------------------------------------------------
 
     def record_version(self, version: DocumentVersion) -> None:
-        with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO document_versions
-                    (id, page_id, version, content_hash, created_at,
-                     change_type, chunk_count, diff_summary)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    version.id, version.page_id, version.version,
-                    version.content_hash, version.created_at.isoformat(),
+        stmt = (
+            sqlite_insert(_document_versions)
+            .values(
+                id=version.id,
+                page_id=version.page_id,
+                version=version.version,
+                content_hash=version.content_hash,
+                created_at=version.created_at.isoformat(),
+                change_type=(
                     version.change_type.value
                     if hasattr(version.change_type, "value")
-                    else str(version.change_type),
-                    version.chunk_count, version.diff_summary,
+                    else str(version.change_type)
                 ),
+                chunk_count=version.chunk_count,
+                diff_summary=version.diff_summary,
             )
+            .on_conflict_do_nothing()
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
 
     def latest_version(self, page_id: str) -> DocumentVersion | None:
         """Return the most recent DocumentVersion for *page_id*, or None."""
-        with self._conn() as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM document_versions
-                WHERE page_id = ?
-                ORDER BY version DESC
-                LIMIT 1
-                """,
-                (page_id,),
-            ).fetchone()
+        stmt = (
+            select(_document_versions)
+            .where(_document_versions.c.page_id == page_id)
+            .order_by(_document_versions.c.version.desc())
+            .limit(1)
+        )
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).mappings().first()
         if not row:
             return None
         return DocumentVersion(
@@ -431,48 +449,46 @@ class RawStore:
 
     def next_version_number(self, page_id: str) -> int:
         """Return the next version number for *page_id* (starts at 1)."""
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT MAX(version) AS v FROM document_versions WHERE page_id = ?",
-                (page_id,),
-            ).fetchone()
-        return (row["v"] or 0) + 1
+        stmt = select(func.max(_document_versions.c.version)).where(
+            _document_versions.c.page_id == page_id
+        )
+        with self._engine.connect() as conn:
+            result = conn.execute(stmt).scalar()
+        return (result or 0) + 1
 
     # ------------------------------------------------------------------
     # Sync cursor (for incremental Notion polling)
     # ------------------------------------------------------------------
 
     def get_cursor(self, key: str) -> str | None:
-        with self._conn() as conn:
-            row = conn.execute(
-                "SELECT cursor FROM sync_cursors WHERE key = ?", (key,)
-            ).fetchone()
-        return row["cursor"] if row else None
+        stmt = select(_sync_cursors.c.cursor).where(_sync_cursors.c.key == key)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).first()
+        return row[0] if row else None
 
     def set_cursor(self, key: str, cursor: str | None) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO sync_cursors (key, cursor, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                    cursor     = excluded.cursor,
-                    updated_at = excluded.updated_at
-                """,
-                (key, cursor, now),
+        stmt = (
+            sqlite_insert(_sync_cursors)
+            .values(key=key, cursor=cursor, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=["key"],
+                set_=dict(cursor=cursor, updated_at=now),
             )
+        )
+        with self._engine.begin() as conn:
+            conn.execute(stmt)
 
     # ------------------------------------------------------------------
     # Stats
     # ------------------------------------------------------------------
 
     def stats(self) -> dict:
-        with self._conn() as conn:
-            ws_count  = conn.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
-            pg_count  = conn.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-            blk_count = conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
-            ver_count = conn.execute("SELECT COUNT(*) FROM document_versions").fetchone()[0]
+        with self._engine.connect() as conn:
+            ws_count  = conn.execute(select(func.count()).select_from(_workspaces)).scalar()
+            pg_count  = conn.execute(select(func.count()).select_from(_pages)).scalar()
+            blk_count = conn.execute(select(func.count()).select_from(_blocks)).scalar()
+            ver_count = conn.execute(select(func.count()).select_from(_document_versions)).scalar()
         return {
             "workspaces":        ws_count,
             "pages":             pg_count,
