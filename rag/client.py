@@ -47,11 +47,13 @@ class LocalLlamaClient:
         )
 
         # Vector store (Chroma)
-        log.info("Opening Chroma store → %s", config.persist_directory)
+        log.info("Opening Chroma store → %s  collection=%s",
+                 config.persist_directory, config.setup_rag_collection)
         self.persist_directory = config.persist_directory
         self.db = Chroma(
             persist_directory=config.persist_directory,
             embedding_function=self.embed,
+            collection_name=config.setup_rag_collection or "rag_collection",
         )
         log.info("Chroma store ready")
 

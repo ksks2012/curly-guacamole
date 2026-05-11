@@ -139,12 +139,23 @@ class RAGEngine:
         else:
             docs = candidates[:k]
 
-        # Build context blocks with source tags so the LLM can cite them
+        # Build context blocks with source tags so the LLM can cite them.
+        # Tag format depends on document origin:
+        #   notion  → [<title> / <section>]
+        #   pdf     → [page <n>, <filename>]
+        #   others  → [<title>] or [<filename>]
         context_blocks = []
         for doc in docs:
-            page = doc.metadata.get("page", "?")
-            filename = doc.metadata.get("filename", "unknown")
-            tag = f"[page {page + 1}, {filename}]"
+            meta = doc.metadata
+            dtype = meta.get("document_type", "")
+            if dtype == "notion":
+                title   = meta.get("title", "Notion")
+                section = meta.get("section", "")
+                tag = f"[{title} / {section}]" if section else f"[{title}]"
+            else:
+                pg   = meta.get("page")
+                name = meta.get("filename") or meta.get("title", "unknown")
+                tag  = f"[page {pg + 1}, {name}]" if pg is not None else f"[{name}]"
             context_blocks.append(f"{tag}\n{doc.page_content}")
         context = "\n\n".join(context_blocks)
 
