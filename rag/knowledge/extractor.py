@@ -63,32 +63,30 @@ _EMPTY: dict[str, str] = {
 }
 
 
+_FENCE_RE     = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
+_JSON_BLOB_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
 def _join(values: list) -> str:
     """Comma-join a list of strings, ignoring blanks."""
     return ", ".join(str(v).strip() for v in values if str(v).strip())
 
 
-def _extract_json(raw: str) -> dict | None:
-    """Attempt to parse a JSON object from *raw*, tolerating markdown fences."""
-    raw = raw.strip()
-    # Strip ```json … ``` fences
-    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
-    raw = re.sub(r"\s*```$", "", raw)
+def _try_json(s: str) -> dict | None:
     try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict):
-            return obj
+        obj = json.loads(s)
+        return obj if isinstance(obj, dict) else None
     except json.JSONDecodeError:
-        # Try to find the first {...} block
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
-        if m:
-            try:
-                obj = json.loads(m.group())
-                if isinstance(obj, dict):
-                    return obj
-            except json.JSONDecodeError:
-                pass
-    return None
+        return None
+
+
+def _extract_json(raw: str) -> dict | None:
+    """Parse a JSON object from *raw*, tolerating markdown fences."""
+    cleaned = _FENCE_RE.sub("", raw.strip())
+    if result := _try_json(cleaned):
+        return result
+    m = _JSON_BLOB_RE.search(cleaned)
+    return _try_json(m.group()) if m else None
 
 
 class KnowledgeExtractor:
@@ -136,11 +134,11 @@ class KnowledgeExtractor:
             return dict(_EMPTY)
 
         return {
-            KA_SUMMARY:   str(obj.get("summary",   "") or ""),
-            KA_KEYWORDS:  _join(obj.get("keywords",  []) or []),
-            KA_ENTITIES:  _join(obj.get("entities",  []) or []),
-            KA_TOPICS:    _join(obj.get("topics",    []) or []),
-            KA_QUESTIONS: _join(obj.get("questions", []) or []),
+            KA_SUMMARY:   obj.get("summary") or "",
+            KA_KEYWORDS:  _join(obj.get("keywords") or []),
+            KA_ENTITIES:  _join(obj.get("entities") or []),
+            KA_TOPICS:    _join(obj.get("topics") or []),
+            KA_QUESTIONS: _join(obj.get("questions") or []),
         }
 
     # ------------------------------------------------------------------

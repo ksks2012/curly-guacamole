@@ -146,6 +146,13 @@ def _make_engine(db_path: str) -> Engine:
 
     return engine
 
+# Columns updated on conflict for upsert_page (excludes id, workspace_id, created_time)
+_PAGE_UPDATE_COLS = (
+    "title", "source_url", "document_type", "language", "project",
+    "tags", "importance", "notion_page_id", "parent_page_id",
+    "content_hash", "updated_time", "last_synced_at", "metadata_json",
+)
+
 
 class RawStore:
     """SQLite-backed raw storage layer (SQLAlchemy Core).
@@ -176,25 +183,17 @@ class RawStore:
     # ------------------------------------------------------------------
 
     def upsert_workspace(self, ws: Workspace) -> None:
-        stmt = (
-            sqlite_insert(_workspaces)
-            .values(
-                id=ws.id,
-                name=ws.name,
-                description=ws.description,
-                notion_workspace_id=ws.notion_workspace_id,
-                created_at=ws.created_at.isoformat(),
-                metadata_json=json.dumps(ws.metadata),
-            )
-            .on_conflict_do_update(
-                index_elements=["id"],
-                set_=dict(
-                    name=ws.name,
-                    description=ws.description,
-                    notion_workspace_id=ws.notion_workspace_id,
-                    metadata_json=json.dumps(ws.metadata),
-                ),
-            )
+        ins = sqlite_insert(_workspaces).values(
+            id=ws.id,
+            name=ws.name,
+            description=ws.description,
+            notion_workspace_id=ws.notion_workspace_id,
+            created_at=ws.created_at.isoformat(),
+            metadata_json=json.dumps(ws.metadata),
+        )
+        stmt = ins.on_conflict_do_update(
+            index_elements=["id"],
+            set_={c: ins.excluded[c] for c in ("name", "description", "notion_workspace_id", "metadata_json")},
         )
         with self._engine.begin() as conn:
             conn.execute(stmt)
@@ -204,8 +203,16 @@ class RawStore:
         stmt = select(_workspaces).where(_workspaces.c.id == workspace_id)
         with self._engine.connect() as conn:
             row = conn.execute(stmt).mappings().first()
-        if not row:
-            return None
+        return self._row_to_workspace(row) if row else None
+
+    def list_workspaces(self) -> list[Workspace]:
+        stmt = select(_workspaces).order_by(_workspaces.c.name)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).mappings().all()
+        return [self._row_to_workspace(r) for r in rows]
+
+    @staticmethod
+    def _row_to_workspace(row) -> Workspace:
         return Workspace(
             id=row["id"],
             name=row["name"],
@@ -215,66 +222,33 @@ class RawStore:
             metadata=json.loads(row["metadata_json"] or "{}"),
         )
 
-    def list_workspaces(self) -> list[Workspace]:
-        stmt = select(_workspaces).order_by(_workspaces.c.name)
-        with self._engine.connect() as conn:
-            rows = conn.execute(stmt).mappings().all()
-        return [
-            Workspace(
-                id=r["id"],
-                name=r["name"],
-                description=r["description"] or "",
-                notion_workspace_id=r["notion_workspace_id"],
-                created_at=datetime.fromisoformat(r["created_at"]),
-                metadata=json.loads(r["metadata_json"] or "{}"),
-            )
-            for r in rows
-        ]
-
     # ------------------------------------------------------------------
     # Page
     # ------------------------------------------------------------------
 
     def upsert_page(self, page: Page, content_hash: str = "") -> None:
         now = datetime.now(timezone.utc).isoformat()
-        stmt = (
-            sqlite_insert(_pages)
-            .values(
-                id=page.id,
-                workspace_id=page.workspace_id,
-                title=page.title,
-                source_url=page.source,
-                document_type=page.document_type,
-                language=page.metadata.get("language", ""),
-                project=page.metadata.get("project", ""),
-                tags=",".join(page.tags),
-                importance=page.importance,
-                notion_page_id=page.notion_page_id,
-                parent_page_id=page.parent_page_id,
-                content_hash=content_hash,
-                created_time=page.created_time.isoformat(),
-                updated_time=page.updated_time.isoformat(),
-                last_synced_at=now,
-                metadata_json=json.dumps(page.metadata),
-            )
-            .on_conflict_do_update(
-                index_elements=["id"],
-                set_=dict(
-                    title=page.title,
-                    source_url=page.source,
-                    document_type=page.document_type,
-                    language=page.metadata.get("language", ""),
-                    project=page.metadata.get("project", ""),
-                    tags=",".join(page.tags),
-                    importance=page.importance,
-                    notion_page_id=page.notion_page_id,
-                    parent_page_id=page.parent_page_id,
-                    content_hash=content_hash,
-                    updated_time=page.updated_time.isoformat(),
-                    last_synced_at=now,
-                    metadata_json=json.dumps(page.metadata),
-                ),
-            )
+        ins = sqlite_insert(_pages).values(
+            id=page.id,
+            workspace_id=page.workspace_id,
+            title=page.title,
+            source_url=page.source,
+            document_type=page.document_type,
+            language=page.metadata.get("language", ""),
+            project=page.metadata.get("project", ""),
+            tags=",".join(page.tags),
+            importance=page.importance,
+            notion_page_id=page.notion_page_id,
+            parent_page_id=page.parent_page_id,
+            content_hash=content_hash,
+            created_time=page.created_time.isoformat(),
+            updated_time=page.updated_time.isoformat(),
+            last_synced_at=now,
+            metadata_json=json.dumps(page.metadata),
+        )
+        stmt = ins.on_conflict_do_update(
+            index_elements=["id"],
+            set_={c: ins.excluded[c] for c in _PAGE_UPDATE_COLS},
         )
         with self._engine.begin() as conn:
             conn.execute(stmt)

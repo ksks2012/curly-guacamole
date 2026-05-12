@@ -96,6 +96,29 @@ class ChangeType(str, Enum):
     DELETED = "deleted"
 
 
+# Block type sets — module-level constants so properties don't rebuild on every call
+_HEADING_TYPES: frozenset[BlockType] = frozenset({
+    BlockType.HEADING_1,
+    BlockType.HEADING_2,
+    BlockType.HEADING_3,
+    BlockType.HEADING_4,
+    BlockType.LOCAL_HEADING,
+})
+
+_TEXT_BEARING_TYPES: frozenset[BlockType] = frozenset({
+    BlockType.PARAGRAPH,
+    BlockType.HEADING_1, BlockType.HEADING_2,
+    BlockType.HEADING_3, BlockType.HEADING_4,
+    BlockType.BULLETED_LIST_ITEM, BlockType.NUMBERED_LIST_ITEM,
+    BlockType.TO_DO, BlockType.TOGGLE, BlockType.CODE,
+    BlockType.QUOTE, BlockType.CALLOUT, BlockType.EQUATION,
+    BlockType.TABLE_ROW,
+    BlockType.LOCAL_HEADING, BlockType.LOCAL_PARAGRAPH,
+    BlockType.LOCAL_CODE, BlockType.LOCAL_TABLE,
+    BlockType.LOCAL_PAGE_TEXT,
+})
+
+
 # ---------------------------------------------------------------------------
 # Core entities
 # ---------------------------------------------------------------------------
@@ -243,30 +266,12 @@ class Block:
     @property
     def is_heading(self) -> bool:
         """True if this block is any heading type."""
-        return self.block_type in {
-            BlockType.HEADING_1,
-            BlockType.HEADING_2,
-            BlockType.HEADING_3,
-            BlockType.HEADING_4,
-            BlockType.LOCAL_HEADING,
-        }
+        return self.block_type in _HEADING_TYPES
 
     @property
     def is_text_bearing(self) -> bool:
         """True if this block type carries indexable plain text."""
-        _TEXT_TYPES = {
-            BlockType.PARAGRAPH,
-            BlockType.HEADING_1, BlockType.HEADING_2,
-            BlockType.HEADING_3, BlockType.HEADING_4,
-            BlockType.BULLETED_LIST_ITEM, BlockType.NUMBERED_LIST_ITEM,
-            BlockType.TO_DO, BlockType.TOGGLE, BlockType.CODE,
-            BlockType.QUOTE, BlockType.CALLOUT, BlockType.EQUATION,
-            BlockType.TABLE_ROW,
-            BlockType.LOCAL_HEADING, BlockType.LOCAL_PARAGRAPH,
-            BlockType.LOCAL_CODE, BlockType.LOCAL_TABLE,
-            BlockType.LOCAL_PAGE_TEXT,
-        }
-        return self.block_type in _TEXT_TYPES
+        return self.block_type in _TEXT_BEARING_TYPES
 
 
 @dataclass

@@ -111,16 +111,15 @@ class EvalDataset:
         import yaml  # pyyaml — already in requirements
         with open(path, encoding="utf-8") as fh:
             raw = yaml.safe_load(fh) or []
-        queries = []
-        for item in raw:
-            queries.append(
-                EvalQuery(
-                    query=str(item.get("query", "")),
-                    relevant_chunks={str(c) for c in item.get("relevant_chunks", [])},
-                    relevant_docs={str(d) for d in item.get("relevant_docs", [])},
-                    note=str(item.get("note", "")),
-                )
+        queries = [
+            EvalQuery(
+                query=str(item.get("query", "")),
+                relevant_chunks={str(c) for c in item.get("relevant_chunks", [])},
+                relevant_docs={str(d) for d in item.get("relevant_docs", [])},
+                note=str(item.get("note", "")),
             )
+            for item in raw
+        ]
         log.info("EvalDataset loaded: %d queries from %s", len(queries), path)
         return cls(queries=queries)
 
@@ -236,17 +235,13 @@ class EvalReport:
     avg_ndcg:   dict[str, float] = field(default_factory=dict)
 
     def _compute_averages(self) -> None:
-        """Compute per-mode averages from individual QueryResults."""
+        n = len(self.results)
+        if not n:
+            return
         for mode in self.modes:
-            n = len(self.results)
-            if n == 0:
-                self.avg_recall[mode] = 0.0
-                self.avg_mrr[mode]    = 0.0
-                self.avg_ndcg[mode]   = 0.0
-            else:
-                self.avg_recall[mode] = sum(r.recall.get(mode, 0.0) for r in self.results) / n
-                self.avg_mrr[mode]    = sum(r.mrr_.get(mode, 0.0) for r in self.results) / n
-                self.avg_ndcg[mode]   = sum(r.ndcg.get(mode, 0.0) for r in self.results) / n
+            self.avg_recall[mode] = sum(r.recall.get(mode, 0.0) for r in self.results) / n
+            self.avg_mrr[mode]    = sum(r.mrr_.get(mode, 0.0) for r in self.results) / n
+            self.avg_ndcg[mode]   = sum(r.ndcg.get(mode, 0.0) for r in self.results) / n
 
     def summary_table(self) -> str:
         """Return a human-readable ASCII table of averaged metrics."""
@@ -379,29 +374,20 @@ class RetrievalEvaluator:
 
     def _retrieve(self, mode: str, query: str) -> list[Document]:
         """Run one retrieval pipeline mode and return a ranked Document list."""
-        client = self._client
+        client   = self._client
+        k, fetch_k = self.k, self.fetch_k
 
         if mode == "vector":
-            pairs = client.similarity_search_with_scores(query, k=self.fetch_k)
-            return [doc for doc, _ in pairs][: self.k]
+            return [d for d, _ in client.similarity_search_with_scores(query, k=fetch_k)][:k]
 
         if mode == "bm25":
-            pairs = client.bm25_index.search(query, k=self.fetch_k)
-            return [doc for doc, _ in pairs][: self.k]
+            return [d for d, _ in client.bm25_index.search(query, k=fetch_k)][:k]
 
-        if mode == "hybrid":
-            _, _, fused = client.hybrid_search_with_scores(
-                query, k=self.k, fetch_k=self.fetch_k
-            )
-            return [doc for doc, _ in fused][: self.k]
-
-        if mode == "reranked":
-            _, _, fused = client.hybrid_search_with_scores(
-                query, k=self.k, fetch_k=self.fetch_k
-            )
-            candidates = [doc for doc, _ in fused]
-            if client.reranker is not None and candidates:
-                return client.reranker.rerank(query, candidates, top_k=self.k)
-            return candidates[: self.k]
+        if mode in ("hybrid", "reranked"):
+            _, _, fused = client.hybrid_search_with_scores(query, k=k, fetch_k=fetch_k)
+            candidates  = [d for d, _ in fused][:k]
+            if mode == "reranked" and client.reranker:
+                return client.reranker.rerank(query, candidates, top_k=k)
+            return candidates
 
         raise ValueError(f"Unknown retrieval mode: {mode!r}")
