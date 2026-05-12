@@ -79,22 +79,24 @@ class DocumentIngester:
         workspace: str = "",
         importance: float = 0.0,
         strategy: str | None = None,
+        embedding_version: str = "",
     ) -> list[Document]:
         """Parse *path* and return enriched, chunked Documents.
 
         Args:
-            path         : Absolute or relative path to the document.
-            doc_id       : Grouping / filter key stored in chunk metadata.
-                           Defaults to the filename stem when not provided.
-            chunk_size   : Maximum characters per chunk (or buffer hint for semantic).
-            chunk_overlap: Overlap between consecutive chunks (unused for semantic).
-            title        : Human-readable document title (defaults to doc_id).
-            tags         : Tag strings attached to every chunk.
-            workspace    : Logical workspace or project label.
-            importance   : Float priority stamp (0.0 = neutral).
-            strategy     : Chunking strategy: "auto" | "recursive" | "heading" |
-                           "semantic".  None / "auto" selects automatically:
-                           markdown → heading, others → recursive.
+            path              : Absolute or relative path to the document.
+            doc_id            : Grouping / filter key stored in chunk metadata.
+                               Defaults to the filename stem when not provided.
+            chunk_size        : Maximum characters per chunk (or buffer hint for semantic).
+            chunk_overlap     : Overlap between consecutive chunks (unused for semantic).
+            title             : Human-readable document title (defaults to doc_id).
+            tags              : Tag strings attached to every chunk.
+            workspace         : Logical workspace or project label.
+            importance        : Float priority stamp (0.0 = neutral).
+            strategy          : Chunking strategy: "auto" | "recursive" | "heading" |
+                               "semantic".  None / "auto" selects automatically:
+                               markdown → heading, others → recursive.
+            embedding_version : Embedding model name/version to stamp in metadata.
 
         Returns:
             List of Documents ready to be passed to ``Indexer.run()``.
@@ -135,12 +137,16 @@ class DocumentIngester:
             tags=tags,
             workspace=workspace,
             importance=importance,
+            embedding_version=embedding_version,
         )
 
         # When strategy is None/auto, pick based on document_type
         if resolved_strategy is None:
             resolved_strategy = auto_strategy(doc_meta["document_type"])
             log.debug("  auto-selected strategy: %s", resolved_strategy.value)
+
+        # Stamp chunk_version from the resolved strategy name
+        doc_meta["chunk_version"] = resolved_strategy.value + "-v1"
 
         chunks = chunk_documents(
             docs,

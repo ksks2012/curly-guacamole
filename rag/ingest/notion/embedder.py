@@ -115,6 +115,7 @@ class NotionEmbedder:
         self._chunker = chunker or NotionChunker()
 
         log.info("Building embeddings client → %s", config.embed_base)
+        self._embedding_version = config.embed_model
         self._embeddings = OpenAIEmbeddings(
             openai_api_key=config.api_key,
             openai_api_base=config.embed_base,
@@ -240,7 +241,14 @@ class NotionEmbedder:
             return {}
 
         # 3. Convert to LangChain Documents
-        docs = [chunk.to_document(page, workspace) for chunk in chunks]
+        docs = [
+            chunk.to_document(
+                page, workspace,
+                embedding_version=self._embedding_version,
+                chunk_version="notion-chunker-v1",
+            )
+            for chunk in chunks
+        ]
 
         # 4. Index into Chroma (handles dedup via SQLRecordManager)
         stats = self._indexer.run(docs)

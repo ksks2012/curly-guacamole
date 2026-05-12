@@ -78,6 +78,8 @@ def make_document_meta(
     tags: list[str] | None = None,
     workspace: str = "",
     importance: float = 0.0,
+    embedding_version: str = "",
+    chunk_version: str = "",
 ) -> dict:
     """Build the document-level metadata dict for *path*.
 
@@ -86,12 +88,14 @@ def make_document_meta(
     float / bool) — *tags* is stored as a comma-separated string.
 
     Args:
-        path       : Absolute or relative path to the source file.
-        doc_id     : Grouping / filter key.  Defaults to the filename stem.
-        title      : Human-readable title.  Defaults to *doc_id*.
-        tags       : Tag strings; stored joined by commas.
-        workspace  : Logical workspace or project label.
-        importance : Float priority (0.0 = neutral, higher = more important).
+        path              : Absolute or relative path to the source file.
+        doc_id            : Grouping / filter key.  Defaults to the filename stem.
+        title             : Human-readable title.  Defaults to *doc_id*.
+        tags              : Tag strings; stored joined by commas.
+        workspace         : Logical workspace or project label.
+        importance        : Float priority (0.0 = neutral, higher = more important).
+        embedding_version : Embedding model name/version, e.g. "text-embedding-ada-002".
+        chunk_version     : Chunking strategy + version tag, e.g. "heading-v1".
     """
     abs_path = os.path.abspath(path)
     filename = os.path.basename(abs_path)
@@ -101,17 +105,24 @@ def make_document_meta(
     tag_str = ",".join(t.strip() for t in (tags or []) if t.strip())
 
     return {
-        "source":        abs_path,
-        "filename":      filename,
-        "source_id":     resolved_doc_id,
-        "doc_id":        resolved_doc_id,
-        "document_type": doc_type_from_path(abs_path),
-        "title":         title.strip() or resolved_doc_id,
-        "tags":          tag_str,
-        "created_time":  mtime,
-        "updated_time":  mtime,
-        "workspace":     workspace,
-        "importance":    float(importance),
+        "source":            abs_path,
+        "source_path":       abs_path,
+        "filename":          filename,
+        "source_id":         resolved_doc_id,
+        "doc_id":            resolved_doc_id,
+        "document_type":     doc_type_from_path(abs_path),
+        "source_type":       "local",
+        "title":             title.strip() or resolved_doc_id,
+        "tags":              tag_str,
+        "created_time":      mtime,
+        "updated_time":      mtime,
+        "created_at":        mtime,
+        "updated_at":        mtime,
+        "workspace":         workspace,
+        "importance":        float(importance),
+        "content_type":      "",
+        "embedding_version": embedding_version,
+        "chunk_version":     chunk_version,
     }
 
 

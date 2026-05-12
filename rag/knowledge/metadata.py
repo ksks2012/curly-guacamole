@@ -108,6 +108,17 @@ class ChunkMetadata:
     section:            str = ""
     heading_path:       list[str] = field(default_factory=list)
 
+    # ── Versioning / provenance ───────────────────────────────────────────
+    # source_type      : origin of the content — "notion" | "local"
+    # content_type     : classification of the chunk — "prose" | "code" | "table" | "list" | ""
+    #                    (populated by content classifiers in Phase B+, empty by default)
+    # embedding_version: embedding model name used to produce the vector
+    # chunk_version    : chunking strategy + version tag, e.g. "heading-v1"
+    source_type:        str = ""
+    content_type:       str = ""
+    embedding_version:  str = ""
+    chunk_version:      str = ""
+
     # ------------------------------------------------------------------
     # Chroma serialisation
     # ------------------------------------------------------------------
@@ -142,12 +153,20 @@ class ChunkMetadata:
             "chunk_id":          self.chunk_id,
             "section":           self.section,
             "heading_path":      _join(self.heading_path),
+            # ── Versioning / provenance ───────────────────────────────────
+            "source_type":       self.source_type,
+            "content_type":      self.content_type,
+            "embedding_version": self.embedding_version,
+            "chunk_version":     self.chunk_version,
             # ── Legacy aliases (backward-compat) ─────────────────────────
             "doc_id":            self.page_id,
             "source_id":         self.page_id,
             "source":            self.source_url,
+            "source_path":       self.source_url,
             "title":             self.page_title,
             "workspace":         self.workspace_name,
+            "created_at":        self.created_time,
+            "updated_at":        self.last_edited_time,
         }
 
     @classmethod
@@ -174,6 +193,10 @@ class ChunkMetadata:
             chunk_id=int(meta.get("chunk_id", 0)),
             section=meta.get("section", ""),
             heading_path=_split(meta.get("heading_path", "")),
+            source_type=meta.get("source_type", ""),
+            content_type=meta.get("content_type", ""),
+            embedding_version=meta.get("embedding_version", ""),
+            chunk_version=meta.get("chunk_version", ""),
         )
 
     # ------------------------------------------------------------------
@@ -191,6 +214,10 @@ class ChunkMetadata:
         heading_path: list[str] | None = None,
         block_id: str = "",
         block_type: str = "",
+        source_type: str = "",
+        content_type: str = "",
+        embedding_version: str = "",
+        chunk_version: str = "",
     ) -> "ChunkMetadata":
         """Build a ChunkMetadata from models.Page + models.Workspace objects."""
         return cls(
@@ -211,4 +238,8 @@ class ChunkMetadata:
             chunk_id=chunk_id,
             section=section,
             heading_path=heading_path or [],
+            source_type=source_type or ("notion" if getattr(page, "notion_page_id", "") else "local"),
+            content_type=content_type,
+            embedding_version=embedding_version,
+            chunk_version=chunk_version,
         )

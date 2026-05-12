@@ -317,35 +317,53 @@ class Chunk:
         """SHA-256 of the chunk content — used for change detection."""
         return hashlib.sha256(self.content.encode()).hexdigest()
 
-    def to_chroma_meta(self, page: Page, workspace: Workspace) -> dict:
-        """Build a Chroma-safe metadata dict (str / int / float / bool only).
+    def to_chroma_meta(
+        self,
+        page: "Page",
+        workspace: "Workspace",
+        *,
+        embedding_version: str = "",
+        chunk_version: str = "",
+        content_type: str = "",
+    ) -> dict:
+        """Build a canonical Chroma-safe metadata dict via ChunkMetadata.
 
-        Keys match the legacy ``rag/ingest/schema.py`` field names so this
-        model is a drop-in replacement for the existing ingestion pipeline.
+        Delegates to ChunkMetadata.from_page() so both the Notion and local-file
+        pipelines emit the same v1 canonical schema.
         """
-        return {
-            # ── document-level ────────────────────────────────────────────
-            "doc_id":        page.id,
-            "source_id":     page.id,
-            "workspace":     workspace.name,
-            "title":         page.title,
-            "document_type": page.document_type,
-            "source":        page.source,
-            "tags":          ",".join(page.tags),
-            "importance":    page.importance,
-            "created_time":  page.created_time.isoformat(),
-            "updated_time":  page.updated_time.isoformat(),
-            # ── chunk-level ───────────────────────────────────────────────
-            "chunk_id":      self.chunk_index,
-            "section":       self.section,
-        }
+        from rag.knowledge.metadata import ChunkMetadata
+        return ChunkMetadata.from_page(
+            page,
+            workspace,
+            chunk_id=self.chunk_index,
+            section=self.section,
+            heading_path=[self.section] if self.section else [],
+            block_id=self.block_ids[0] if self.block_ids else "",
+            block_type=str(self.metadata.get("block_type", "")),
+            content_type=content_type or str(self.metadata.get("content_type", "")),
+            embedding_version=embedding_version,
+            chunk_version=chunk_version,
+        ).to_chroma()
 
-    def to_document(self, page: Page, workspace: Workspace):
+    def to_document(
+        self,
+        page: "Page",
+        workspace: "Workspace",
+        *,
+        embedding_version: str = "",
+        chunk_version: str = "",
+        content_type: str = "",
+    ):
         """Return a LangChain Document ready for vector-store indexing."""
         from langchain_core.documents import Document as LCDocument
         return LCDocument(
             page_content=self.content,
-            metadata=self.to_chroma_meta(page, workspace),
+            metadata=self.to_chroma_meta(
+                page, workspace,
+                embedding_version=embedding_version,
+                chunk_version=chunk_version,
+                content_type=content_type,
+            ),
         )
 
 
