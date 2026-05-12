@@ -15,7 +15,7 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Query expansion** — generates alternative phrasings to broaden recall
 - **Citation-grounded answers** — LLM is forced to cite `[page N, filename]`
 - **Incremental indexing** via LangChain `index()` + SQLite record manager (no duplicates on re-run)
-- **Raw storage layer** — SQLite-backed store for pages and blocks, enabling re-embedding without re-fetching from Notion
+- **Raw storage layer** — SQLAlchemy Core / SQLite-backed store for pages and blocks, enabling re-embedding without re-fetching from Notion
 - **Document-level filtering** — scope search to a specific `doc_id` from the dashboard
 
 ## Requirements
@@ -178,8 +178,10 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 ```
 .
 ├── cmd/
-│   └── dashboard.py              # NiceGUI debug dashboard (Search + Index tabs)
+│   └── dashboard.py              # NiceGUI debug dashboard entry point (bootstrap + tab assembly)
 ├── ui/
+│   ├── search_tab.py             # Search tab UI — query bar, filters, result columns, chunk detail
+│   ├── index_tab.py              # Index tab UI — chunking options, file upload, doc list
 │   ├── search_controller.py      # Search tab logic (state, search, filter)
 │   └── index_controller.py       # Index tab logic (save file, embed, list docs)
 ├── etc/
@@ -197,7 +199,10 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 │   │   ├── strategies.py         # ChunkStrategy enum + auto-selection logic
 │   │   ├── notion/
 │   │   │   ├── client.py         # NotionClient — REST API wrapper (auth, pagination, retry)
-│   │   │   └── sync.py           # NotionSyncPipeline — incremental page sync to RawStore
+│   │   │   ├── sync.py           # NotionSyncPipeline — incremental page sync to RawStore
+│   │   │   ├── chunker.py        # NotionChunker — structure-aware heading/section chunker
+│   │   │   ├── embedder.py       # NotionEmbedder — RawStore → Chroma embedding pipeline
+│   │   │   └── pipeline.py       # NotionRAGClient — unified sync + embed + query entry point
 │   │   └── parsers/
 │   │       ├── pdf.py            # PDF → Documents (page-level)
 │   │       ├── markdown.py       # Markdown → Documents (heading-section-level)
@@ -205,7 +210,7 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 │   ├── knowledge/
 │   │   ├── models.py             # Domain models: Workspace, Page, Block, Chunk, DocumentVersion
 │   │   ├── metadata.py           # ChunkMetadata — canonical Chroma metadata schema
-│   │   └── store.py              # RawStore — SQLite raw storage layer
+│   │   └── store.py              # RawStore — SQLAlchemy Core / SQLite raw storage layer
 │   └── retrieval/
 │       ├── bm25.py               # BM25Index + RRF fusion
 │       └── filters.py            # SearchFilter — Chroma where-clause builder
