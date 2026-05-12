@@ -59,3 +59,36 @@ Reply ONLY with a JSON array of strings, one string per phrasing, e.g.:
 
 Do NOT include the original question. Do not add any other text.
 """)
+
+# ---------------------------------------------------------------------------
+# Knowledge extraction prompt
+#
+# Variables: {text}
+# Used to extract structured knowledge artifacts from a single text chunk.
+# The LLM must return a single valid JSON object so the caller can parse it.
+#
+# Prefix ka_ (knowledge artifact) is documented here; the prompt itself does
+# not use the prefix — that is applied by KnowledgeExtractor.
+# ---------------------------------------------------------------------------
+KNOWLEDGE_EXTRACTION_PROMPT = PromptTemplate.from_template("""\
+Extract structured knowledge from the text chunk below.
+
+Reply ONLY with a single valid JSON object using exactly these keys:
+{{
+  "summary":   "2-3 sentence summary of what this chunk is about (30-80 words)",
+  "keywords":  ["key term or phrase", "..."],
+  "entities":  ["named person / place / org / product / technology", "..."],
+  "topics":    ["broad topic or theme", "..."],
+  "questions": ["natural question whose answer is in this chunk", "..."]
+}}
+
+Guidelines:
+- summary  : concise and informative; do not start with "This chunk…"
+- keywords : 3-8 specific terms critical for retrieval; prefer noun phrases
+- entities : proper nouns only; skip generic words
+- topics   : 1-4 high-level categories (e.g. "machine learning", "pricing")
+- questions: 2-5 questions a user might ask whose answer appears in this text
+
+Text:
+{text}
+""")

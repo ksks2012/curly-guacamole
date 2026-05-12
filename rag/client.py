@@ -11,6 +11,7 @@ from utils.logger import AppLogger
 from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
+from rag.knowledge.extractor import KnowledgeExtractor
 from rag.reranker import RerankerFactory
 from rag.retrieval.bm25 import BM25Index, rrf_fuse
 from rag.retrieval.filters import SearchFilter
@@ -89,6 +90,9 @@ class LocalLlamaClient:
         # BM25 index — built lazily on first hybrid search request
         self.bm25_index = BM25Index()
         self._bm25_dirty = True  # rebuild needed before first use
+
+        # Knowledge extractor — used for B.1 semantic enrichment
+        self.extractor = KnowledgeExtractor(self.llm)
 
         log.info("LocalLlamaClient ready")
 
@@ -539,6 +543,7 @@ class LocalLlamaClient:
         chunk_size: int = 500,
         chunk_overlap: int = 100,
         doc_id: str | None = None,
+        extract_knowledge: bool = False,
     ) -> dict:
         """Ingest any supported document type (PDF, Markdown, plain text).
 
@@ -546,10 +551,14 @@ class LocalLlamaClient:
         the resulting chunks through Indexer.run().
 
         Args:
-            path         : path to the document file.
-            chunk_size   : maximum characters per chunk.
-            chunk_overlap: overlap between consecutive chunks.
-            doc_id       : document-level identifier; defaults to filename.
+            path              : path to the document file.
+            chunk_size        : maximum characters per chunk.
+            chunk_overlap     : overlap between consecutive chunks.
+            doc_id            : document-level identifier; defaults to filename.
+            extract_knowledge : when True, call KnowledgeExtractor.enrich() before
+                                indexing to stamp ka_summary / ka_keywords / ka_entities /
+                                ka_topics / ka_questions onto every chunk.  Requires one
+                                LLM call per chunk — opt-in to avoid cost on bulk loads.
 
         Returns:
             Stats dict from Indexer.run() with keys:
@@ -560,13 +569,79 @@ class LocalLlamaClient:
                 path, doc_id=doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
             )
             log.info(
-                "add_document: %s  %d chunks  doc_id=%r",
-                path, len(chunks), doc_id,
+                "add_document: %s  %d chunks  doc_id=%r  extract_knowledge=%s",
+                path, len(chunks), doc_id, extract_knowledge,
             )
+            if extract_knowledge:
+                chunks = self.extractor.enrich(chunks)
             return self.indexer.run(chunks)
         except Exception as e:
             log.error("add_document failed: %s", e, exc_info=True)
             raise
+
+    def enrich_doc(
+        self,
+        doc_id: str,
+        overwrite: bool = False,
+    ) -> dict:
+        """Run knowledge extraction on all chunks for *doc_id* already in Chroma.
+
+        Fetches each chunk's text and existing metadata, calls KnowledgeExtractor,
+        then updates the Chroma collection in-place (no re-embedding needed).
+
+        This is the post-hoc enrichment path for documents that were indexed
+        before B.1 was introduced, or when ``extract_knowledge=False`` was used.
+
+        Args:
+            doc_id    : The ``doc_id`` (= ``source_id`` / ``page_id``) to enrich.
+            overwrite : When False (default), skip chunks that already have a
+                        non-empty ``ka_summary``.  Set True to re-extract everything.
+
+        Returns:
+            dict with keys ``enriched``, ``skipped``, ``failed``.
+        """
+        log.info("enrich_doc: doc_id=%r  overwrite=%s", doc_id, overwrite)
+
+        result = self.db.get(
+            where={"doc_id": {"$eq": doc_id}},
+            include=["documents", "metadatas"],
+        )
+        ids       = result.get("ids") or []
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+
+        if not ids:
+            log.warning("enrich_doc: no chunks found for doc_id=%r", doc_id)
+            return {"enriched": 0, "skipped": 0, "failed": 0}
+
+        stats = {"enriched": 0, "skipped": 0, "failed": 0}
+        new_ids, new_metas = [], []
+
+        for chroma_id, text, meta in zip(ids, documents, metadatas):
+            meta = meta or {}
+            if not overwrite and KnowledgeExtractor.is_enriched(meta):
+                stats["skipped"] += 1
+                log.debug("  skip (already enriched): %s", chroma_id)
+                continue
+
+            artifact = self.extractor.extract_one(text or "")
+            if not artifact.get("ka_summary"):
+                stats["failed"] += 1
+                log.warning("  extraction produced no summary: %s", chroma_id)
+                continue
+
+            new_ids.append(chroma_id)
+            new_metas.append({**meta, **artifact})
+            stats["enriched"] += 1
+
+        if new_ids:
+            self.db._collection.update(ids=new_ids, metadatas=new_metas)
+            log.info(
+                "enrich_doc done: enriched=%d  skipped=%d  failed=%d",
+                stats["enriched"], stats["skipped"], stats["failed"],
+            )
+
+        return stats
 
     def add_pdf(
         self,
