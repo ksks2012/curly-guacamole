@@ -37,6 +37,9 @@ def test_metadata():
         heading_path=["Overview", "Intro"],
         block_id="b-001",
         block_type="paragraph",
+        embedding_version="text-embedding-ada-002",
+        chunk_version="heading-v1",
+        content_type="prose",
     )
 
     chroma = meta.to_chroma()
@@ -57,12 +60,27 @@ def test_metadata():
     assert chroma["tags"] == "ai,rag"
     assert chroma["heading_path"] == "Overview,Intro"
 
+    # New v1 provenance fields
+    assert chroma["source_type"] == "local"
+    assert chroma["content_type"] == "prose"
+    assert chroma["embedding_version"] == "text-embedding-ada-002"
+    assert chroma["chunk_version"] == "heading-v1"
+
+    # Aliases present
+    assert chroma["created_at"] == chroma["created_time"]
+    assert chroma["updated_at"] == chroma["last_edited_time"]
+    assert chroma["source_path"] == chroma["source_url"]
+
     # Round-trip
     restored = ChunkMetadata.from_chroma(chroma)
     assert restored.tags == ["ai", "rag"]
     assert restored.heading_path == ["Overview", "Intro"]
     assert restored.chunk_id == 3
     assert restored.section == "Intro"
+    assert restored.source_type == "local"
+    assert restored.content_type == "prose"
+    assert restored.embedding_version == "text-embedding-ada-002"
+    assert restored.chunk_version == "heading-v1"
 
     print("  ChunkMetadata: OK")
 
