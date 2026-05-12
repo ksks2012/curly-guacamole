@@ -73,12 +73,18 @@ def _result_card(
 # Tab entry point
 # ---------------------------------------------------------------------------
 
-def build(ctrl: SearchController) -> ui.Select:
+def build(ctrl: SearchController, on_search: list | None = None) -> ui.Select:
     """Build the complete Search tab content into the current NiceGUI context.
+
+    Args:
+        on_search : Optional list of zero-argument callables that will be
+                    invoked after every successful search.  Callers append
+                    refresh functions here to keep other tabs in sync.
 
     Returns the Source-filter Select widget so the Index tab can refresh its
     options after a document is embedded.
     """
+    _on_search = on_search if on_search is not None else []
 
     # ── Query bar ─────────────────────────────────────────────────────────
     with ui.card().classes("w-full rounded-none shadow-md p-3").style("flex-shrink: 0;"):
@@ -124,6 +130,8 @@ def build(ctrl: SearchController) -> ui.Select:
 
                 render_results.refresh(rerank_on, hybrid_on)
                 render_detail.refresh()
+                for cb in _on_search:
+                    cb()
 
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
 

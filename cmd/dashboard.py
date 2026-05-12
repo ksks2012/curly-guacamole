@@ -41,6 +41,7 @@ from ui.search_controller import SearchController
 from ui.index_controller import IndexController
 import ui.search_tab as search_tab_ui
 import ui.index_tab as index_tab_ui
+import ui.trace_tab as trace_tab_ui
 
 # ---------------------------------------------------------------------------
 # Bootstrap: config → logging → client → controller
@@ -77,7 +78,11 @@ def dashboard():
             "flex-shrink: 0;"
         ) as tabs:
             search_tab = ui.tab("Search").props("no-caps")
+            trace_tab  = ui.tab("Trace").props("no-caps")
             index_tab  = ui.tab("Index").props("no-caps")
+
+        # Shared callback list — trace tab appends its refresh here
+        _on_search: list = []
 
         with ui.tab_panels(tabs, value=search_tab).classes("p-0 w-full").style(
             "flex: 1; min-height: 0; overflow: hidden;"
@@ -86,7 +91,13 @@ def dashboard():
             with ui.tab_panel(search_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
             ):
-                fi_source = search_tab_ui.build(_ctrl)
+                fi_source = search_tab_ui.build(_ctrl, on_search=_on_search)
+
+            with ui.tab_panel(trace_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                refresh_trace = trace_tab_ui.build(_ctrl)
+                _on_search.append(refresh_trace)
 
             with ui.tab_panel(index_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: row; overflow: hidden;"

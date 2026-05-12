@@ -1,4 +1,5 @@
 import os
+from time import perf_counter
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -373,6 +374,134 @@ class LocalLlamaClient:
             "bm25": bm25_results,
             "hybrid": hybrid_results,
             "reranked": reranked,
+        }
+
+    def search_for_trace(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 20,
+        doc_id: str | None = None,
+        use_rerank: bool = False,
+        use_hybrid: bool = False,
+        search_filter: "SearchFilter | None" = None,
+    ) -> dict:
+        """Like search_for_debug but also returns per-step timing in ``trace``.
+
+        The ``trace`` key is a list of dicts with keys:
+            stage       : str   — step name
+            elapsed_ms  : float — wall time for this step
+            in_count    : int   — input pool size from the previous step
+            out_count   : int   — output count after this step
+            docs        : list[tuple[Document, float]] — top-5 preview
+            params      : dict  — stage-specific parameters
+        """
+        trace: list[dict] = []
+
+        if use_hybrid:
+            if self._bm25_dirty:
+                self.rebuild_bm25()
+            where = self._where(search_filter=search_filter)
+
+            t0 = perf_counter()
+            vector_results = self.similarity_search_with_scores(
+                query, k=fetch_k, search_filter=search_filter
+            )
+            vector_ms = (perf_counter() - t0) * 1000
+            trace.append({
+                "stage": "Vector Search",
+                "elapsed_ms": round(vector_ms, 1),
+                "in_count": 0,
+                "out_count": len(vector_results),
+                "docs": vector_results[:5],
+                "params": {"fetch_k": fetch_k},
+            })
+
+            t0 = perf_counter()
+            bm25_results = self.bm25_index.search(query, k=fetch_k, where=where)
+            bm25_ms = (perf_counter() - t0) * 1000
+            trace.append({
+                "stage": "BM25 Search",
+                "elapsed_ms": round(bm25_ms, 1),
+                "in_count": 0,
+                "out_count": len(bm25_results),
+                "docs": bm25_results[:5],
+                "params": {"fetch_k": fetch_k},
+            })
+
+            vector_ids = {d.metadata.get("chunk_id") for d, _ in vector_results}
+            bm25_ids   = {d.metadata.get("chunk_id") for d, _ in bm25_results}
+            overlap    = len(vector_ids & bm25_ids)
+
+            t0 = perf_counter()
+            hybrid_results = rrf_fuse(vector_results, bm25_results, top_k=fetch_k)
+            rrf_ms = (perf_counter() - t0) * 1000
+            trace.append({
+                "stage": "RRF Merge",
+                "elapsed_ms": round(rrf_ms, 1),
+                "in_count": len(vector_results) + len(bm25_results),
+                "out_count": len(hybrid_results),
+                "docs": hybrid_results[:5],
+                "params": {
+                    "overlap": overlap,
+                    "total_unique": len(vector_ids | bm25_ids),
+                },
+            })
+            rerank_pool = [doc for doc, _ in hybrid_results]
+        else:
+            t0 = perf_counter()
+            vector_results = self.similarity_search_with_scores(
+                query, k=fetch_k, doc_id=doc_id, search_filter=search_filter,
+            )
+            vector_ms = (perf_counter() - t0) * 1000
+            trace.append({
+                "stage": "Vector Search",
+                "elapsed_ms": round(vector_ms, 1),
+                "in_count": 0,
+                "out_count": len(vector_results),
+                "docs": vector_results[:5],
+                "params": {"fetch_k": fetch_k},
+            })
+            bm25_results   = None
+            hybrid_results = None
+            rerank_pool    = [doc for doc, _ in vector_results]
+
+        reranked: list[tuple[Document, float]] | None = None
+        if use_rerank and self.reranker is not None:
+            t0 = perf_counter()
+            reranked  = self.reranker.rerank_with_scores(query, rerank_pool, top_k=k)
+            rerank_ms = (perf_counter() - t0) * 1000
+            trace.append({
+                "stage": "Rerank",
+                "elapsed_ms": round(rerank_ms, 1),
+                "in_count": len(rerank_pool),
+                "out_count": len(reranked),
+                "docs": reranked[:5],
+                "params": {"top_k": k},
+            })
+
+        final      = reranked if reranked else (hybrid_results if hybrid_results else vector_results)
+        final_docs = final[:k]
+        trace.append({
+            "stage": "Final Context",
+            "elapsed_ms": 0.0,
+            "in_count": len(final),
+            "out_count": len(final_docs),
+            "docs": final_docs,
+            "params": {"top_k": k},
+        })
+
+        log.debug(
+            "search_for_trace: %d trace steps  total=%.1fms",
+            len(trace),
+            sum(s["elapsed_ms"] for s in trace),
+        )
+        return {
+            "vector":   vector_results,
+            "bm25":     bm25_results,
+            "hybrid":   hybrid_results,
+            "reranked": reranked,
+            "trace":    trace,
         }
 
     # ------------------------------------------------------------------

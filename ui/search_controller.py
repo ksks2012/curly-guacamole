@@ -10,11 +10,25 @@ Has NO dependency on NiceGUI. The display layer (dashboard.py) calls this class
 and decides how to surface state changes in the UI.
 """
 
+from dataclasses import dataclass, field
+
 from langchain_core.documents import Document
 
 from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
 from rag.retrieval.filters import SearchFilter
+
+
+@dataclass
+class TraceStep:
+    """One stage of the retrieval pipeline, populated by search_for_trace()."""
+
+    stage:      str
+    elapsed_ms: float
+    in_count:   int
+    out_count:  int
+    docs:       list[tuple[Document, float]] = field(default_factory=list)
+    params:     dict = field(default_factory=dict)
 
 log = AppLogger.get(__name__)
 
@@ -38,6 +52,8 @@ class SearchController:
         self._hybrid: list[tuple[Document, float]] | None = None
         self._metadata: dict = {}
         self._filter: SearchFilter = SearchFilter()
+        self._trace: list[TraceStep] = []
+        self._last_query: str = ""
 
     # ------------------------------------------------------------------
     # Read-only state accessors
@@ -95,6 +111,16 @@ class SearchController:
         """Short human-readable description of active constraints."""
         return self._filter.summary()
 
+    @property
+    def trace(self) -> list[TraceStep]:
+        """Per-step trace from the last search_for_trace call."""
+        return self._trace
+
+    @property
+    def last_query(self) -> str:
+        """The query string from the most recent search."""
+        return self._last_query
+
     # ------------------------------------------------------------------
     # Actions (state mutations)
     # ------------------------------------------------------------------
@@ -129,9 +155,11 @@ class SearchController:
         self._bm25 = None
         self._hybrid = None
         self._metadata = {}
+        self._trace = []
+        self._last_query = query
 
         try:
-            result = self._client.search_for_debug(
+            result = self._client.search_for_trace(
                 query, k=k, fetch_k=fetch_k,
                 use_rerank=use_rerank, use_hybrid=use_hybrid,
                 search_filter=self._filter if self.filter_active else None,
@@ -140,10 +168,21 @@ class SearchController:
             log.error("Search failed: %s", e, exc_info=True)
             return str(e)
 
-        self._vector = result["vector"]
+        self._vector   = result["vector"]
         self._reranked = result["reranked"]
-        self._bm25 = result["bm25"]
-        self._hybrid = result["hybrid"]
+        self._bm25     = result["bm25"]
+        self._hybrid   = result["hybrid"]
+        self._trace    = [
+            TraceStep(
+                stage=s["stage"],
+                elapsed_ms=s["elapsed_ms"],
+                in_count=s["in_count"],
+                out_count=s["out_count"],
+                docs=s["docs"],
+                params=s["params"],
+            )
+            for s in result.get("trace", [])
+        ]
         log.info(
             "run_search done: %d vector  bm25=%s  hybrid=%s  reranked=%s",
             len(self._vector),
