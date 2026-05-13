@@ -12,6 +12,7 @@ from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
 from rag.knowledge.extractor import KnowledgeExtractor
+from rag.knowledge.qa_generator import QAGenerator
 from rag.reranker import RerankerFactory
 from rag.retrieval.bm25 import BM25Index, rrf_fuse
 from rag.retrieval.filters import SearchFilter
@@ -93,6 +94,21 @@ class LocalLlamaClient:
 
         # Knowledge extractor — used for B.1 semantic enrichment
         self.extractor = KnowledgeExtractor(self.llm)
+
+        # QA generator + dedicated QA index — Stage B.2
+        _qa_collection = (config.setup_rag_collection or "rag_collection") + "_qa"
+        self.qa_db = Chroma(
+            persist_directory=config.persist_directory,
+            embedding_function=self.embed,
+            collection_name=_qa_collection,
+        )
+        self.qa_indexer = Indexer(
+            db=self.qa_db,
+            namespace=_qa_collection,
+            db_url=config.db_url,
+            batch_limit=config.batch_limit,
+        )
+        self.qa_generator = QAGenerator(self.llm)
 
         log.info("LocalLlamaClient ready")
 
@@ -642,6 +658,91 @@ class LocalLlamaClient:
             )
 
         return stats
+
+    def generate_qa(self, doc_id: str, overwrite: bool = False) -> dict:
+        """Generate and index QA pairs for all chunks of *doc_id*.
+
+        Fetches chunks from the main collection, generates QA pairs via LLM,
+        and writes them to the dedicated QA collection (``<collection>_qa``).
+
+        Each QA pair is stored with the *question* as page_content so that
+        semantic search on user queries matches questions directly.
+
+        Args:
+            doc_id    : The document identifier to generate QA pairs for.
+            overwrite : When False (default), skip if any QA pairs already
+                        exist for this doc_id.  When True, delete existing
+                        pairs first and regenerate.
+
+        Returns:
+            dict with keys ``generated``, ``indexed``, ``skipped``, ``failed``.
+        """
+        log.info("generate_qa: doc_id=%r  overwrite=%s", doc_id, overwrite)
+
+        existing     = self.qa_db.get(where={"doc_id": {"$eq": doc_id}}, include=["metadatas"])
+        existing_ids = existing.get("ids") or []
+
+        if existing_ids and not overwrite:
+            log.info(
+                "generate_qa: %d QA pairs already exist, skipping (overwrite=False)",
+                len(existing_ids),
+            )
+            return {"generated": 0, "indexed": 0, "skipped": len(existing_ids), "failed": 0}
+
+        if existing_ids:
+            self.qa_db._collection.delete(where={"doc_id": {"$eq": doc_id}})
+            log.info("generate_qa: deleted %d existing QA pairs", len(existing_ids))
+
+        result    = self.db.get(where={"doc_id": {"$eq": doc_id}}, include=["documents", "metadatas"])
+        ids       = result.get("ids") or []
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+
+        if not ids:
+            log.warning("generate_qa: no chunks found for doc_id=%r", doc_id)
+            return {"generated": 0, "indexed": 0, "skipped": 0, "failed": 0}
+
+        source_docs = [
+            Document(page_content=text, metadata=meta or {})
+            for text, meta in zip(documents, metadatas)
+            if text
+        ]
+
+        pairs = self.qa_generator.generate_for_docs(source_docs)
+        if not pairs:
+            return {"generated": 0, "indexed": 0, "skipped": 0, "failed": len(source_docs)}
+
+        stats = self.qa_indexer.run([p.to_document() for p in pairs])
+        indexed = stats.get("num_added", 0) + stats.get("num_updated", 0)
+        log.info("generate_qa done: generated=%d  indexed=%d", len(pairs), indexed)
+        return {"generated": len(pairs), "indexed": indexed, "skipped": 0, "failed": 0}
+
+    def qa_search(self, query: str, k: int = 5) -> list[dict]:
+        """Search the QA index for questions matching *query*.
+
+        Returns a ranked list of QA pairs whose questions are semantically
+        close to *query*.  Each entry contains the matched question, the
+        generated answer, and back-references to the source chunk and document.
+
+        Args:
+            query : Natural-language query or question.
+            k     : Maximum number of QA pairs to return.
+
+        Returns:
+            List of dicts with keys: ``question``, ``answer``, ``chunk_id``,
+            ``doc_id``, ``score`` (float 0-1, higher = more similar).
+        """
+        raw = self.qa_db.similarity_search_with_score(query, k=k)
+        return [
+            {
+                "question": doc.page_content,
+                "answer":   doc.metadata.get("answer",   ""),
+                "chunk_id": doc.metadata.get("chunk_id", ""),
+                "doc_id":   doc.metadata.get("doc_id",   ""),
+                "score":    round(1 / (1 + dist), 4),
+            }
+            for doc, dist in raw
+        ]
 
     def add_pdf(
         self,

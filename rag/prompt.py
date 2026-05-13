@@ -92,3 +92,31 @@ Guidelines:
 Text:
 {text}
 """)
+
+# ---------------------------------------------------------------------------
+# QA pair generation prompt
+#
+# Variables: {text}, {n}
+# Used by QAGenerator to produce N question-answer pairs from a single chunk.
+# Questions are stored as page_content in the QA index so that user queries
+# hit generated questions semantically rather than raw chunk text.
+# ---------------------------------------------------------------------------
+QA_GENERATION_PROMPT = PromptTemplate.from_template("""\
+You are a question-answer generation assistant.
+
+Given the text chunk below, generate {n} question-answer pairs.
+Each question should be something a user might naturally ask whose answer is
+clearly found in the text.  Each answer must be concise (1-3 sentences) and
+derived directly from the text — do not add outside knowledge.
+
+Reply ONLY with a JSON array using exactly this format:
+[
+  {{"question": "...", "answer": "..."}},
+  ...
+]
+
+Do NOT include any explanation or text outside the JSON array.
+
+Text:
+{text}
+""")
