@@ -10,6 +10,7 @@ from utils.logger import AppLogger
 from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
+from rag.knowledge.clusterer import TopicClusterer
 from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
@@ -97,6 +98,7 @@ class LocalLlamaClient:
             ),
             extractor=KnowledgeExtractor(self.llm),
             qa_generator=QAGenerator(self.llm),
+            clusterer=TopicClusterer(llm=self.llm, db=self.db),
         )
 
         log.info("LocalLlamaClient ready")
@@ -116,6 +118,10 @@ class LocalLlamaClient:
     @property
     def qa_generator(self) -> QAGenerator:
         return self.knowledge.qa_generator
+
+    @property
+    def clusterer(self) -> TopicClusterer:
+        return self.knowledge.clusterer
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
@@ -221,6 +227,9 @@ class LocalLlamaClient:
 
     def qa_search(self, query: str, k: int = 5) -> list[dict]:
         return self.knowledge.qa_search(query, k=k)
+
+    def cluster_topics(self, n_clusters: int = 8, doc_id: str | None = None):
+        return self.knowledge.cluster_topics(n_clusters=n_clusters, doc_id=doc_id)
 
     # ------------------------------------------------------------------
     # Generation

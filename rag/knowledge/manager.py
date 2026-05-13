@@ -18,12 +18,13 @@ from utils.logger import AppLogger
 if TYPE_CHECKING:
     from langchain_chroma import Chroma
     from rag.indexer import Indexer
+    from rag.knowledge.clusterer import TopicClusterer, TopicMap
 
 log = AppLogger.get(__name__)
 
 
 class KnowledgeManager:
-    """Enrichment and QA generation for already-indexed documents.
+    """Enrichment, QA generation, and topic clustering for indexed documents.
 
     Args:
         db           : Main Chroma collection (read-only: fetches chunks by doc_id).
@@ -31,6 +32,7 @@ class KnowledgeManager:
         qa_indexer   : Indexer wired to *qa_db*.
         extractor    : KnowledgeExtractor instance.
         qa_generator : QAGenerator instance.
+        clusterer    : TopicClusterer instance (optional; needed for B.3).
     """
 
     def __init__(
@@ -40,12 +42,14 @@ class KnowledgeManager:
         qa_indexer:   "Indexer",
         extractor:    KnowledgeExtractor,
         qa_generator: QAGenerator,
+        clusterer:    "TopicClusterer | None" = None,
     ) -> None:
         self._db           = db
         self._qa_db        = qa_db
         self._qa_indexer   = qa_indexer
         self.extractor     = extractor
         self.qa_generator  = qa_generator
+        self.clusterer     = clusterer
 
     # ------------------------------------------------------------------
     # B.1 — knowledge extraction
@@ -164,3 +168,31 @@ class KnowledgeManager:
             }
             for doc, dist in raw
         ]
+
+    # ------------------------------------------------------------------
+    # B.3 — topic clustering
+    # ------------------------------------------------------------------
+
+    def cluster_topics(
+        self, n_clusters: int = 8, doc_id: str | None = None
+    ) -> "TopicMap":
+        """Cluster chunks by embedding and label each cluster with a topic_id.
+
+        Writes ``topic_id`` into Chroma metadata for every processed chunk.
+
+        Args:
+            n_clusters : Number of KMeans clusters (topics).
+            doc_id     : If given, cluster only chunks from this document.
+
+        Returns:
+            TopicMap with cluster_labels and chunk_topics.
+
+        Raises:
+            RuntimeError: If the client was built without a TopicClusterer.
+        """
+        if self.clusterer is None:
+            raise RuntimeError(
+                "cluster_topics requires a TopicClusterer — "
+                "pass clusterer= when constructing KnowledgeManager"
+            )
+        return self.clusterer.fit_and_assign(n_clusters=n_clusters, doc_id=doc_id)

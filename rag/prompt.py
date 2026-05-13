@@ -120,3 +120,31 @@ Do NOT include any explanation or text outside the JSON array.
 Text:
 {text}
 """)
+
+# ---------------------------------------------------------------------------
+# Topic label prompt
+#
+# Variables: {text}
+# Used by TopicClusterer._label_cluster() to name a cluster of documents.
+# The LLM receives the most representative chunks (closest to the centroid)
+# and must return a single short snake_case identifier, e.g. "topic_rag".
+# ---------------------------------------------------------------------------
+TOPIC_LABEL_PROMPT = PromptTemplate.from_template("""\
+You are a topic labeling assistant.
+
+Read the document excerpts below and identify the single dominant topic they share.
+
+Reply with ONLY a short snake_case label starting with "topic_", for example:
+  topic_rag
+  topic_evolutionary_algorithm
+  topic_agents
+  topic_llm_fine_tuning
+
+Rules:
+- One label only — no explanation, no JSON, no extra text.
+- Use lowercase letters, digits, and underscores only.
+- Keep it under 40 characters.
+
+Excerpts:
+{text}
+""")
