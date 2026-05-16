@@ -234,3 +234,36 @@ class AppConfig:
     def log_datefmt(self) -> str:
         """strftime date format for the asctime field."""
         return self._data.get("log_datefmt", "%H:%M:%S")
+
+    # --- Memory (Stage C.1) ---
+
+    @property
+    def memory_db_path(self) -> str:
+        """Absolute path to the conversation memory SQLite database."""
+        raw = self._data.get("memory_db_path", "./my_db/memory.db")
+        return self._abspath(raw)
+
+    @property
+    def memory_default_session(self) -> str:
+        """Default session_id used when no session is explicitly set."""
+        return self._data.get("memory_default_session", "default")
+
+    @property
+    def memory_max_recent(self) -> int:
+        """Maximum Q-A turns to keep in recent_questions."""
+        return int(self._data.get("memory_max_recent", 20))
+
+    @property
+    def memory_max_topics(self) -> int:
+        """Maximum topic tags to keep in current_topics."""
+        return int(self._data.get("memory_max_topics", 10))
+
+    @property
+    def memory_extract_topics(self) -> bool:
+        """When True, call LLM to extract topic tags after each Q-A turn."""
+        return bool(self._data.get("memory_extract_topics", True))
+
+    @property
+    def memory_auto_infer_project(self) -> bool:
+        """When True, periodically infer active_project from recent conversation."""
+        return bool(self._data.get("memory_auto_infer_project", True))

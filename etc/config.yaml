@@ -34,3 +34,11 @@ raw_db_path: "./my_db/raw.db"
 notion_token: "token"
 notion_workspace_id: "workspace_id"
 notion_database_id: "database_id"
+
+# memory
+memory_db_path: "./my_db/memory.db"
+memory_default_session: "default"
+memory_max_recent: 20
+memory_max_topics: 10
+memory_extract_topics: true
+memory_auto_infer_project: true
