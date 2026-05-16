@@ -19,12 +19,13 @@ if TYPE_CHECKING:
     from langchain_chroma import Chroma
     from rag.indexer import Indexer
     from rag.knowledge.clusterer import TopicClusterer, TopicMap
+    from rag.knowledge.linker import CrossDocLinker, LinkStats
 
 log = AppLogger.get(__name__)
 
 
 class KnowledgeManager:
-    """Enrichment, QA generation, and topic clustering for indexed documents.
+    """Enrichment, QA generation, topic clustering, and cross-doc linking.
 
     Args:
         db           : Main Chroma collection (read-only: fetches chunks by doc_id).
@@ -33,6 +34,7 @@ class KnowledgeManager:
         extractor    : KnowledgeExtractor instance.
         qa_generator : QAGenerator instance.
         clusterer    : TopicClusterer instance (optional; needed for B.3).
+        linker       : CrossDocLinker instance (optional; needed for B.4).
     """
 
     def __init__(
@@ -43,6 +45,7 @@ class KnowledgeManager:
         extractor:    KnowledgeExtractor,
         qa_generator: QAGenerator,
         clusterer:    "TopicClusterer | None" = None,
+        linker:       "CrossDocLinker | None" = None,
     ) -> None:
         self._db           = db
         self._qa_db        = qa_db
@@ -50,6 +53,7 @@ class KnowledgeManager:
         self.extractor     = extractor
         self.qa_generator  = qa_generator
         self.clusterer     = clusterer
+        self.linker        = linker
 
     # ------------------------------------------------------------------
     # B.1 — knowledge extraction
@@ -196,3 +200,58 @@ class KnowledgeManager:
                 "pass clusterer= when constructing KnowledgeManager"
             )
         return self.clusterer.fit_and_assign(n_clusters=n_clusters, doc_id=doc_id)
+
+    # ------------------------------------------------------------------
+    # B.4 — cross-document linking
+    # ------------------------------------------------------------------
+
+    def _require_linker(self) -> "CrossDocLinker":
+        if self.linker is None:
+            raise RuntimeError(
+                "This operation requires a CrossDocLinker — "
+                "pass linker= when constructing KnowledgeManager"
+            )
+        return self.linker
+
+    def link_chunks(
+        self,
+        top_k:     int   = 5,
+        threshold: float = 0.75,
+        doc_id:    str | None = None,
+    ) -> "LinkStats":
+        """Find top-K cross-document similar chunks and write links to metadata.
+
+        Args:
+            top_k     : Related chunks to store per chunk.
+            threshold : Minimum cosine similarity to include.
+            doc_id    : If given, re-link only chunks from this document.
+        """
+        return self._require_linker().link_chunks(
+            top_k=top_k, threshold=threshold, doc_id=doc_id
+        )
+
+    def link_pages(
+        self,
+        top_k:     int   = 5,
+        threshold: float = 0.70,
+    ) -> "LinkStats":
+        """Find top-K related documents via centroid embedding similarity.
+
+        Writes ``related_doc_ids`` and ``related_doc_scores`` into every
+        chunk of each document.
+        """
+        return self._require_linker().link_pages(top_k=top_k, threshold=threshold)
+
+    def get_related_chunks(self, chunk_id: str) -> list[dict]:
+        """Return related chunks stored in *chunk_id*'s metadata.
+
+        Returns list of dicts: ``id``, ``doc_id``, ``score``, ``text``.
+        """
+        return self._require_linker().get_related_chunks(chunk_id)
+
+    def get_related_pages(self, doc_id: str) -> list[dict]:
+        """Return related documents for *doc_id* using stored page-level links.
+
+        Returns list of dicts: ``doc_id``, ``score``.
+        """
+        return self._require_linker().get_related_pages(doc_id)

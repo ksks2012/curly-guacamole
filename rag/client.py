@@ -12,6 +12,7 @@ from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
 from rag.knowledge.clusterer import TopicClusterer
 from rag.knowledge.extractor import KnowledgeExtractor
+from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
 from rag.reranker import RerankerFactory
@@ -99,6 +100,7 @@ class LocalLlamaClient:
             extractor=KnowledgeExtractor(self.llm),
             qa_generator=QAGenerator(self.llm),
             clusterer=TopicClusterer(llm=self.llm, db=self.db),
+            linker=CrossDocLinker(db=self.db),
         )
 
         log.info("LocalLlamaClient ready")
@@ -122,6 +124,10 @@ class LocalLlamaClient:
     @property
     def clusterer(self) -> TopicClusterer:
         return self.knowledge.clusterer
+
+    @property
+    def linker(self) -> CrossDocLinker:
+        return self.knowledge.linker
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
@@ -230,6 +236,23 @@ class LocalLlamaClient:
 
     def cluster_topics(self, n_clusters: int = 8, doc_id: str | None = None):
         return self.knowledge.cluster_topics(n_clusters=n_clusters, doc_id=doc_id)
+
+    def link_chunks(
+        self,
+        top_k: int = 5,
+        threshold: float = 0.75,
+        doc_id: str | None = None,
+    ):
+        return self.knowledge.link_chunks(top_k=top_k, threshold=threshold, doc_id=doc_id)
+
+    def link_pages(self, top_k: int = 5, threshold: float = 0.70):
+        return self.knowledge.link_pages(top_k=top_k, threshold=threshold)
+
+    def get_related_chunks(self, chunk_id: str) -> list[dict]:
+        return self.knowledge.get_related_chunks(chunk_id)
+
+    def get_related_pages(self, doc_id: str) -> list[dict]:
+        return self.knowledge.get_related_pages(doc_id)
 
     # ------------------------------------------------------------------
     # Generation
