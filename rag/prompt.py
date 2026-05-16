@@ -8,8 +8,14 @@ Centralising all prompts here makes it easy to:
 
 Available templates
 -------------------
-RAG_PROMPT              : final answer generation (context + question → answer with citations)
-QUERY_EXPANSION_PROMPT  : generates N alternative phrasings of a query to broaden retrieval
+RAG_PROMPT                  : final answer generation (context + question → answer)
+MEMORY_AWARE_RAG_PROMPT     : RAG_PROMPT with {memory_context} injected above context
+QUERY_EXPANSION_PROMPT      : generates N alternative phrasings of a query
+KNOWLEDGE_EXTRACTION_PROMPT : extracts structured knowledge from a text chunk
+QA_GENERATION_PROMPT        : generates N Q-A pairs from a text chunk
+TOPIC_LABEL_PROMPT          : names a cluster of document excerpts
+TOPIC_EXTRACTION_PROMPT     : extracts 1-5 topic tags from a Q-A turn (C.1)
+PROJECT_INFERENCE_PROMPT    : infers the active project from recent conversation (C.1)
 """
 
 from langchain_core.prompts import PromptTemplate
@@ -147,4 +153,81 @@ Rules:
 
 Excerpts:
 {text}
+""")
+
+# ---------------------------------------------------------------------------
+# Conversation Memory prompts (Stage C.1)
+# ---------------------------------------------------------------------------
+
+# TOPIC_EXTRACTION_PROMPT
+# Variables: {question}, {answer_excerpt}
+# Called by ConversationMemory.add_turn() after each Q-A exchange.
+# Returns a JSON array of 1-5 short topic strings.
+# ---------------------------------------------------------------------------
+TOPIC_EXTRACTION_PROMPT = PromptTemplate.from_template("""\
+You are a topic tagging assistant.
+
+Given the question and answer below, extract 1-5 concise topic tags that best
+describe what was discussed.
+
+Reply ONLY with a JSON array of short topic strings (2-5 words each), e.g.:
+["RAG Architecture", "Vector Search", "Knowledge Extraction"]
+
+Rules:
+- Return ONLY the JSON array — no explanation, no extra text.
+- Each tag should be a noun phrase, 2-5 words, title-cased.
+- If no clear topic can be identified, return: []
+
+Question: {question}
+
+Answer (excerpt): {answer_excerpt}
+""")
+
+# ---------------------------------------------------------------------------
+# PROJECT_INFERENCE_PROMPT
+# Variables: {questions}, {topics}
+# Called periodically by ConversationMemory._refresh_active_project().
+# Returns a single plain-text project description (no JSON).
+# ---------------------------------------------------------------------------
+PROJECT_INFERENCE_PROMPT = PromptTemplate.from_template("""\
+You are a project context analyst.
+
+Based on the following recent questions and discussion topics from a conversation,
+infer the user's primary active project or goal in 6-15 words.
+
+Rules:
+- Return ONLY the project description as a plain string.
+- No quotes, no JSON, no explanation.
+- Be specific and descriptive, e.g. "Building Notion AI knowledge management system with RAG"
+
+Recent topics: {topics}
+
+Recent questions:
+{questions}
+""")
+
+# ---------------------------------------------------------------------------
+# MEMORY_AWARE_RAG_PROMPT
+# Variables: {memory_context}, {context}, {question}
+# Used by RAGEngine when ConversationMemory is active.
+# {memory_context} is produced by ConversationMemory.build_context_block().
+# ---------------------------------------------------------------------------
+MEMORY_AWARE_RAG_PROMPT = PromptTemplate.from_template("""\
+You are a document analysis assistant with conversation memory.
+
+=== Conversation Memory ===
+{memory_context}
+===========================
+
+Rules:
+- Answer ONLY using the provided document context below.
+- If the answer is not in the context, say "I don't know based on the provided documents."
+- You MUST cite the source for every claim, e.g. [page 3, test.pdf].
+- Use the conversation memory to personalise and contextualise your answer when relevant.
+
+Context:
+{context}
+
+Question:
+{question}
 """)
