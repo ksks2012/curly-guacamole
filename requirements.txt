@@ -12,3 +12,5 @@ sentence-transformers
 nicegui
 rank-bm25
 requests
+scikit-learn
+numpy
