@@ -25,9 +25,53 @@ class AppConfig:
                 if os.path.exists(self._DEFAULT_CONFIG_PATH)
                 else os.path.join(os.getcwd(), "etc", "config.yaml")
             )
+        self._path = os.path.abspath(path)
         # Project root = two levels above the config file (etc/../)
-        self._root = os.path.dirname(os.path.dirname(os.path.abspath(path)))
+        self._root = os.path.dirname(os.path.dirname(self._path))
         self._data = read_yaml(path)
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "AppConfig":
+        """Construct an AppConfig from an explicit YAML path."""
+        return cls(path=path)
+
+    # ------------------------------------------------------------------
+    # Runtime update
+    # ------------------------------------------------------------------
+
+    @property
+    def raw_text(self) -> str:
+        """Return the raw content of the config file as a string."""
+        with open(self._path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def reload(self) -> None:
+        """Re-read the config file from disk and update in-memory data.
+
+        Properties that call ``self._data.get(...)`` on every access
+        (e.g. ``query_expansion_enabled``, ``upload_dir``) become effective
+        immediately.  Properties used to build LLM / Chroma objects at
+        ``LocalLlamaClient.__init__`` time require a full dashboard restart.
+        """
+        self._data = read_yaml(self._path)
+
+    def save(self, yaml_text: str) -> None:
+        """Validate *yaml_text* as YAML, write it to disk, then call reload().
+
+        Raises:
+            ValueError: If *yaml_text* is not valid YAML.
+            OSError:    If the file cannot be written.
+        """
+        import yaml as _yaml  # local import — only needed here
+        try:
+            parsed = _yaml.safe_load(yaml_text)
+        except _yaml.YAMLError as exc:
+            raise ValueError(f"Invalid YAML: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("Config must be a YAML mapping, not a scalar or list")
+        with open(self._path, "w", encoding="utf-8") as f:
+            f.write(yaml_text)
+        self.reload()
 
     def _abspath(self, raw: str) -> str:
         """Return an absolute path, resolving relative paths against the project root."""

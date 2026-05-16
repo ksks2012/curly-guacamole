@@ -39,9 +39,11 @@ from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
 from ui.search_controller import SearchController
 from ui.index_controller import IndexController
+from ui.config_controller import ConfigController
 import ui.search_tab as search_tab_ui
 import ui.index_tab as index_tab_ui
 import ui.trace_tab as trace_tab_ui
+import ui.config_tab as config_tab_ui
 
 # ---------------------------------------------------------------------------
 # Bootstrap: config → logging → client → controller
@@ -58,6 +60,7 @@ log.info("Loading config and building RAG client…")
 _client = LocalLlamaClient(_config)
 _ctrl = SearchController(_client)
 _idx_ctrl = IndexController(_client)
+_cfg_ctrl = ConfigController(_config)
 log.info("RAG client ready")
 
 
@@ -80,6 +83,7 @@ def dashboard():
             search_tab = ui.tab("Search").props("no-caps")
             trace_tab  = ui.tab("Trace").props("no-caps")
             index_tab  = ui.tab("Index").props("no-caps")
+            config_tab = ui.tab("Config").props("no-caps")
 
         # Shared callback list — trace tab appends its refresh here
         _on_search: list = []
@@ -108,6 +112,11 @@ def dashboard():
                         {"": ""} | _ctrl.list_doc_title_map()
                     ),
                 )
+
+            with ui.tab_panel(config_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
+            ):
+                config_tab_ui.build(_cfg_ctrl)
 
 
 # ---------------------------------------------------------------------------
