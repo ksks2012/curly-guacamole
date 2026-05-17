@@ -6,6 +6,7 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 
 ## Features
 
+### Retrieval Foundation
 - **Multi-source ingestion** — PDF, Markdown, plain-text, and **Notion** pages
 - **Notion sync** — incremental sync via data source query + Markdown endpoint; content-hash-based change detection skips unchanged pages
 - **Web-based upload** — upload and index files directly from the dashboard
@@ -17,6 +18,18 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Incremental indexing** via LangChain `index()` + SQLite record manager (no duplicates on re-run)
 - **Raw storage layer** — SQLAlchemy Core / SQLite-backed store for pages and blocks, enabling re-embedding without re-fetching from Notion
 - **Document-level filtering** — scope search to a specific `doc_id` from the dashboard
+
+### Knowledge Layer (Stage B)
+- **Knowledge extraction** (B.1) — LLM-driven per-chunk enrichment: summary, keywords, entities, topics, and auto-generated questions written back into Chroma metadata
+- **QA generation** (B.2) — generates question-answer pairs per document; stored in a dedicated QA Chroma collection for semantic question matching at query time
+- **Topic clustering** (B.3) — K-Means over chunk embeddings with LLM-generated cluster labels; assigns `topic_*` tags to every chunk
+- **Cross-document linking** (B.4) — cosine similarity linking at chunk level (`related_chunks`) and page level (`related_pages`); stored in metadata so retrieval results carry "see also" links at zero query-time cost
+
+### Memory System (Stage C)
+- **Conversation memory** (C.1) — persistent short/medium-term memory per session: tracks `active_project`, rolling `current_topics`, and `recent_questions`; automatically injected into every RAG prompt and updated after each answer
+- **Topic extraction** — LLM extracts 1-5 topic tags from each Q-A turn to keep `current_topics` up to date
+- **Project inference** — periodically infers `active_project` from recent conversation history via LLM
+- **SQLite-backed sessions** — all memory persists across restarts; multiple named sessions supported
 
 ## Requirements
 
@@ -70,6 +83,14 @@ reranker_model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
 # --- Query expansion ---
 query_expansion_enabled: false
 query_expansion_n: 3              # number of extra phrasings to generate
+
+# --- Conversation memory (Stage C.1) ---
+memory_db_path:           "./my_db/memory.sqlite"
+memory_default_session:   "default"
+memory_max_recent:        20      # max Q-A turns kept in recent_questions
+memory_max_topics:        10      # max entries in current_topics
+memory_extract_topics:    true    # call LLM to extract topic tags after each turn
+memory_auto_infer_project: true   # periodically infer active_project from conversation
 
 # --- Logging ---
 log_level:   "INFO"               # DEBUG | INFO | WARNING | ERROR
@@ -132,7 +153,7 @@ python cmd/dashboard.py
 # open http://localhost:8888
 ```
 
-The dashboard is an engineering tool for tuning retrieval — not a demo. It has two tabs:
+The dashboard is an engineering tool for tuning retrieval — not a demo. It has four tabs:
 
 **Search tab**
 
@@ -147,12 +168,23 @@ With rerank on:
 - Blue left border = chunk that survived reranking; green border = reranked result
 - Cross-encoder score displayed alongside vector relevance score for comparison
 
+**Trace tab**
+
+- Detailed pipeline trace for a query: expansion phrasings, per-stage candidate lists, reranker scores
+- Useful for diagnosing retrieval quality without modifying code
+
 **Index tab**
 
 - Set chunk size, overlap, and an optional `doc-id` override
 - Drop a PDF or click to select — the file is saved to `upload_dir` immediately and embedding runs in the background (upload confirmation appears before embedding completes)
 - Indexed document list updates automatically after each upload
 - The Search tab's filter dropdown is refreshed with any newly indexed `doc_id`
+
+**Config tab**
+
+- Edit all `etc/config.yaml` settings through a form-based UI without restarting
+- Fields with immediate effect are marked `● active`; fields requiring a restart are marked `⚠ restart`
+- Save writes to disk and hot-reloads applicable settings instantly
 
 ### Indexing multiple documents with isolation (programmatic)
 
@@ -173,6 +205,55 @@ resp = client.answer_query("Summarise both documents")
 resp = client.answer_query("What is the methodology?", expand_query=True)
 ```
 
+### Knowledge Layer (Stage B)
+
+```python
+# B.1 — enrich all chunks of a document with LLM-extracted metadata
+client.enrich_doc("my_doc")
+
+# B.2 — generate Q-A pairs and index them in the QA collection
+client.generate_qa("my_doc")
+# semantic search over generated questions
+results = client.qa_search("How does chunking work?", k=5)
+
+# B.3 — cluster all indexed chunks into topics and label them
+map = client.cluster_topics(n_clusters=8)
+# map.labels: {chunk_id: "topic_rag"}, map.summary: {"topic_rag": ["id1", ...]}
+
+# B.4 — compute cross-document chunk-level links
+client.link_chunks(top_k=5, threshold=0.75)
+# compute page-level centroid links
+client.link_pages(top_k=5, threshold=0.70)
+# read back at retrieval time
+related_chunks = client.get_related_chunks("chroma-chunk-id")
+related_pages  = client.get_related_pages("my_doc")
+```
+
+### Conversation Memory (Stage C.1)
+
+Memory is automatically active — every `answer_query()` call injects the current session
+context into the prompt and records the turn afterward.
+
+```python
+# Override the active project label (also inferred automatically every 10 turns)
+client.set_active_project("Building Notion AI Knowledge System")
+
+# Inspect current session state
+state = client.get_memory_state()
+print(state.active_project)    # "Building Notion AI Knowledge System"
+print(state.current_topics)    # ["RAG Architecture", "Vector Search", ...]
+print(state.recent_questions)  # [ConversationTurn(...), ...]
+
+# Switch to a different named session (e.g., per user or per project)
+client.switch_memory_session("project-b")
+
+# List all sessions
+sessions = client.list_sessions()
+
+# Clear the current session's history
+client.clear_memory_session()
+```
+
 ## Project Structure
 
 ```
@@ -181,16 +262,19 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 │   └── dashboard.py              # NiceGUI debug dashboard entry point (bootstrap + tab assembly)
 ├── ui/
 │   ├── search_tab.py             # Search tab UI — query bar, filters, result columns, chunk detail
+│   ├── trace_tab.py              # Trace tab UI — per-stage pipeline diagnostics
 │   ├── index_tab.py              # Index tab UI — chunking options, file upload, doc list
+│   ├── config_tab.py             # Config tab UI — form-based schema-driven settings editor
 │   ├── search_controller.py      # Search tab logic (state, search, filter)
-│   └── index_controller.py       # Index tab logic (save file, embed, list docs)
+│   ├── index_controller.py       # Index tab logic (save file, embed, list docs)
+│   └── config_controller.py      # Config tab logic (load, save, hot-reload, schema)
 ├── etc/
 │   └── config.yaml               # All runtime settings
 ├── rag/
 │   ├── client.py                 # LocalLlamaClient — coordinates all RAG components
-│   ├── engine.py                 # RAGEngine — query expansion, retrieval, rerank, generation
+│   ├── engine.py                 # RAGEngine — query expansion, retrieval, rerank, generation, memory
 │   ├── indexer.py                # Indexer — SQLRecordManager lifecycle and document ingestion
-│   ├── prompt.py                 # RAG_PROMPT, QUERY_EXPANSION_PROMPT
+│   ├── prompt.py                 # All prompt templates (RAG, expansion, knowledge, memory)
 │   ├── reranker.py               # BaseReranker, CrossEncoderReranker, LLMReranker, RerankerFactory
 │   ├── ingest/
 │   │   ├── chunker.py            # Chunking strategies: recursive / heading-aware / semantic
@@ -210,7 +294,16 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 │   ├── knowledge/
 │   │   ├── models.py             # Domain models: Workspace, Page, Block, Chunk, DocumentVersion
 │   │   ├── metadata.py           # ChunkMetadata — canonical Chroma metadata schema
-│   │   └── store.py              # RawStore — SQLAlchemy Core / SQLite raw storage layer
+│   │   ├── store.py              # RawStore — SQLAlchemy Core / SQLite raw storage layer
+│   │   ├── extractor.py          # KnowledgeExtractor — LLM-driven per-chunk enrichment (B.1)
+│   │   ├── qa_generator.py       # QAGenerator — Q-A pair generation and QA index (B.2)
+│   │   ├── clusterer.py          # TopicClusterer — K-Means + LLM label assignment (B.3)
+│   │   ├── linker.py             # CrossDocLinker — chunk and page similarity linking (B.4)
+│   │   └── manager.py            # KnowledgeManager — coordinates B.1–B.4 operations
+│   ├── memory/
+│   │   ├── models.py             # ConversationTurn, SessionState dataclasses (C.1)
+│   │   ├── store.py              # MemoryStore — SQLite persistence for sessions and turns (C.1)
+│   │   └── manager.py            # ConversationMemory — session lifecycle, topic extraction (C.1)
 │   └── retrieval/
 │       ├── bm25.py               # BM25Index + RRF fusion
 │       └── filters.py            # SearchFilter — Chroma where-clause builder
@@ -218,12 +311,19 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 │   ├── config.py                 # AppConfig — typed properties over config.yaml
 │   ├── file_processor.py         # PDF chunking, YAML / JSON / CSV helpers
 │   └── logger.py                 # AppLogger — centralised logging setup
+├── testing/
+│   ├── testing_extractor.py      # B.1 knowledge extraction unit tests
+│   ├── testing_qa.py             # B.2 QA generation unit tests
+│   ├── testing_clusterer.py      # B.3 topic clustering unit tests
+│   ├── testing_memory.py         # C.1 conversation memory unit tests
+│   └── ...                       # additional integration and pipeline tests
 ├── data/
 │   └── uploads/                  # Uploaded files (path configurable via upload_dir)
 ├── my_db/
 │   ├── chroma.sqlite3            # Chroma vector store (auto-created)
 │   ├── record_manager_cache.sql  # LangChain record manager
-│   └── raw.db                    # Raw storage layer for Notion sync (auto-created)
+│   ├── raw.db                    # Raw storage layer for Notion sync (auto-created)
+│   └── memory.sqlite             # Conversation memory store (auto-created)
 ├── main.py                       # Entry point
 ├── setup.py
 └── requirements.txt
@@ -233,6 +333,8 @@ resp = client.answer_query("What is the methodology?", expand_query=True)
 
 ```
 query
+  │
+  ├─[conversation memory]─► inject active_project + current_topics + recent Q-A into prompt
   │
   ├─[query expansion]─► N alternative phrasings (optional, via LLM)
   │
@@ -248,6 +350,25 @@ reranker  (cross-encoder or LLM → top k)
   │
   ▼
 citation-grounded LLM answer  [page N, filename]
+  │
+  └─[conversation memory]─► save turn, extract topics, update session state
+```
+
+## Knowledge Enrichment Pipeline (Stage B)
+
+```
+indexed chunks in Chroma
+  │
+  ├─B.1 enrich_doc()──► LLM extracts summary / keywords / entities / topics / questions
+  │                      written back into Chroma metadata
+  │
+  ├─B.2 generate_qa()─► LLM generates Q-A pairs per chunk
+  │                      stored in dedicated QA Chroma collection
+  │
+  ├─B.3 cluster_topics()► K-Means over embeddings → LLM labels → topic_* tags in metadata
+  │
+  └─B.4 link_chunks()──► cosine similarity matrix → related_chunk_ids in metadata
+       link_pages()────► centroid similarity matrix → related_doc_ids in metadata
 ```
 
 ## Notion Sync Pipeline
