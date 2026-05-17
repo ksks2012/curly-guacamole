@@ -1,24 +1,12 @@
 """
-SQLite persistence for Stage C.1 — Conversation Memory.
+SQLite persistence for Stage C — Conversation Memory, User Memory, Knowledge Timeline.
 
 Schema
 ------
-conversation_sessions
-    session_id    TEXT PK
-    created_at    TEXT
-    updated_at    TEXT
-    active_project TEXT
-    current_topics TEXT   (JSON array of strings)
-    metadata      TEXT   (JSON object)
-
-conversation_turns
-    id            INTEGER PK AUTOINCREMENT
-    session_id    TEXT  FK → conversation_sessions
-    seq           INTEGER   (1-based, per session)
-    timestamp     TEXT
-    question      TEXT
-    answer_summary TEXT
-    topics        TEXT   (JSON array of strings)
+conversation_sessions      C.1 — session state
+conversation_turns         C.1 — per-turn Q-A history
+user_interests             C.2 — recency-weighted topic interest profile
+timeline_entries           C.3 — daily knowledge activity log
 
 Uses SQLAlchemy Core (same pattern as rag/knowledge/store.py).
 WAL mode enabled for concurrent read safety.
@@ -32,12 +20,14 @@ from typing import Any
 
 from sqlalchemy import (
     Column,
+    Float,
     Index,
     Integer,
     MetaData,
     String,
     Table,
     Text,
+    and_,
     create_engine,
     event,
     func,
@@ -83,6 +73,30 @@ turns_table = Table(
     Column("answer_summary", Text,    nullable=False, default=""),
     Column("topics",         Text,    nullable=False, default="[]"),
     Index("idx_turns_session_seq", "session_id", "seq"),
+)
+
+# C.2 — Semantic User Memory
+user_interests_table = Table(
+    "user_interests",
+    _metadata,
+    Column("topic",      String,  primary_key=True),
+    Column("count",      Integer, nullable=False, default=1),
+    Column("weight",     Float,   nullable=False, default=1.0),
+    Column("first_seen", String,  nullable=False),
+    Column("last_seen",  String,  nullable=False),
+)
+
+# C.3 — Knowledge Timeline  (one row per calendar day, aggregated across sessions)
+timeline_table = Table(
+    "timeline_entries",
+    _metadata,
+    Column("date",           String,  primary_key=True),   # YYYY-MM-DD
+    Column("year",           Integer, nullable=False),
+    Column("month",          Integer, nullable=False),
+    Column("topics",         Text,    nullable=False, default="[]"),
+    Column("doc_ids",        Text,    nullable=False, default="[]"),
+    Column("question_count", Integer, nullable=False, default=1),
+    Column("updated_at",     String,  nullable=False),
 )
 
 
@@ -286,3 +300,170 @@ class MemoryStore:
             return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return default
+
+    # ------------------------------------------------------------------
+    # C.2 — User Interests
+    # ------------------------------------------------------------------
+
+    def upsert_interest(self, topic: str) -> None:
+        """Record one occurrence of *topic*, updating its recency-weighted score.
+
+        Weight update rule: ``new_weight = old_weight * 0.9 + 1.0``
+
+        This is an exponential moving average where each new occurrence adds
+        1.0 to a score that decays by 10 % between updates.  Topics that
+        appear frequently and recently will accumulate the highest scores.
+        """
+        now = _utcnow()
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                select(user_interests_table).where(
+                    user_interests_table.c.topic == topic
+                )
+            ).fetchone()
+
+            if row is None:
+                conn.execute(
+                    user_interests_table.insert().values(
+                        topic=topic, count=1, weight=1.0,
+                        first_seen=now, last_seen=now,
+                    )
+                )
+            else:
+                conn.execute(
+                    user_interests_table.update()
+                    .where(user_interests_table.c.topic == topic)
+                    .values(
+                        count=row.count + 1,
+                        weight=round(row.weight * 0.9 + 1.0, 4),
+                        last_seen=now,
+                    )
+                )
+
+    def get_top_interests(self, n: int = 10) -> list[dict]:
+        """Return top *n* interests ordered by weight descending."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(user_interests_table)
+                .order_by(user_interests_table.c.weight.desc())
+                .limit(n)
+            ).fetchall()
+        return [
+            {
+                "topic":      r.topic,
+                "count":      r.count,
+                "weight":     r.weight,
+                "first_seen": r.first_seen,
+                "last_seen":  r.last_seen,
+            }
+            for r in rows
+        ]
+
+    def clear_interests(self) -> None:
+        """Delete all user interest records."""
+        with self._engine.begin() as conn:
+            conn.execute(user_interests_table.delete())
+
+    # ------------------------------------------------------------------
+    # C.3 — Knowledge Timeline
+    # ------------------------------------------------------------------
+
+    def upsert_timeline_entry(
+        self,
+        date:    str,
+        topics:  list[str],
+        doc_ids: list[str],
+    ) -> None:
+        """Upsert a daily timeline entry, merging topics and doc_ids.
+
+        *date* must be a ``YYYY-MM-DD`` ISO date string.
+        Calling this multiple times on the same date accumulates topics and
+        increments the question count — it does NOT replace the existing row.
+        """
+        year  = int(date[:4])
+        month = int(date[5:7])
+        now   = _utcnow()
+
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                select(timeline_table).where(timeline_table.c.date == date)
+            ).fetchone()
+
+            if row is None:
+                conn.execute(
+                    timeline_table.insert().values(
+                        date=date, year=year, month=month,
+                        topics=json.dumps(topics),
+                        doc_ids=json.dumps(doc_ids),
+                        question_count=1,
+                        updated_at=now,
+                    )
+                )
+            else:
+                # Merge: preserve order, deduplicate
+                merged_topics = list(
+                    dict.fromkeys(self._load_json(row.topics, []) + topics)
+                )
+                merged_docs = list(
+                    dict.fromkeys(self._load_json(row.doc_ids, []) + doc_ids)
+                )
+                conn.execute(
+                    timeline_table.update()
+                    .where(timeline_table.c.date == date)
+                    .values(
+                        topics=json.dumps(merged_topics),
+                        doc_ids=json.dumps(merged_docs),
+                        question_count=row.question_count + 1,
+                        updated_at=now,
+                    )
+                )
+
+    def get_timeline(self, start_date: str, end_date: str) -> list[dict]:
+        """Return daily entries in the closed interval [*start_date*, *end_date*].
+
+        Dates are ``YYYY-MM-DD`` strings; ISO lexicographic order is used for
+        comparison (safe for SQLite TEXT columns).
+        Results are ordered by date ascending.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(timeline_table)
+                .where(
+                    and_(
+                        timeline_table.c.date >= start_date,
+                        timeline_table.c.date <= end_date,
+                    )
+                )
+                .order_by(timeline_table.c.date.asc())
+            ).fetchall()
+        return [
+            {
+                "date":           r.date,
+                "year":           r.year,
+                "month":          r.month,
+                "topics":         self._load_json(r.topics, []),
+                "doc_ids":        self._load_json(r.doc_ids, []),
+                "question_count": r.question_count,
+            }
+            for r in rows
+        ]
+
+    def get_timeline_by_year(self, year: int) -> list[dict]:
+        """Return all entries for the given *year*, ordered by date."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(timeline_table)
+                .where(timeline_table.c.year == year)
+                .order_by(timeline_table.c.date.asc())
+            ).fetchall()
+        return [
+            {
+                "date":           r.date,
+                "year":           r.year,
+                "month":          r.month,
+                "topics":         self._load_json(r.topics, []),
+                "doc_ids":        self._load_json(r.doc_ids, []),
+                "question_count": r.question_count,
+            }
+            for r in rows
+        ]
