@@ -18,11 +18,16 @@ from typing import TYPE_CHECKING, Callable
 
 from langchain_core.documents import Document
 
-from rag.prompt import RAG_PROMPT, QUERY_EXPANSION_PROMPT
+from rag.prompt import (
+    MEMORY_AWARE_RAG_PROMPT,
+    QUERY_EXPANSION_PROMPT,
+    RAG_PROMPT,
+)
 from utils.logger import AppLogger
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
+    from rag.memory.manager import ConversationMemory
     from rag.reranker import BaseReranker
     from utils.config import AppConfig
 
@@ -40,6 +45,9 @@ class RAGEngine:
                         decoupled from the Chroma store.
         reranker      : BaseReranker or None.
         config        : AppConfig — reads query_expansion_enabled/n.
+        memory        : ConversationMemory (optional). When supplied, injects
+                        a context block into the prompt and records every
+                        Q-A turn after the response is returned.
     """
 
     def __init__(
@@ -48,11 +56,13 @@ class RAGEngine:
         get_retriever: Callable,
         reranker: "BaseReranker | None",
         config: "AppConfig",
+        memory: "ConversationMemory | None" = None,
     ) -> None:
         self.llm = llm
         self.get_retriever = get_retriever
         self.reranker = reranker
         self.config = config
+        self.memory = memory
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -159,5 +169,35 @@ class RAGEngine:
             context_blocks.append(f"{tag}\n{doc.page_content}")
         context = "\n\n".join(context_blocks)
 
-        prompt = RAG_PROMPT.format(context=context, question=query)
-        return self.llm.invoke(prompt)
+        # Build prompt — inject memory context when available
+        memory_block = ""
+        if self.memory is not None:
+            try:
+                memory_block = self.memory.build_context_block()
+            except Exception as exc:
+                log.warning("memory.build_context_block() failed: %s", exc)
+
+        if memory_block:
+            prompt = MEMORY_AWARE_RAG_PROMPT.format(
+                memory_context=memory_block,
+                context=context,
+                question=query,
+            )
+        else:
+            prompt = RAG_PROMPT.format(context=context, question=query)
+
+        response = self.llm.invoke(prompt)
+
+        # Update memory after response (fail-safe — never blocks the answer)
+        if self.memory is not None:
+            try:
+                answer_text = (
+                    response.content
+                    if hasattr(response, "content")
+                    else str(response)
+                )
+                self.memory.add_turn(query, answer_text)
+            except Exception as exc:
+                log.warning("memory.add_turn() failed: %s", exc)
+
+        return response

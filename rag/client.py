@@ -15,6 +15,8 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
+from rag.memory.manager import ConversationMemory
+from rag.memory.store import MemoryStore
 from rag.reranker import RerankerFactory
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.searcher import Searcher
@@ -103,6 +105,21 @@ class LocalLlamaClient:
             linker=CrossDocLinker(db=self.db),
         )
 
+        # Stage C.1 — Conversation Memory
+        _mem_store  = MemoryStore(db_path=config.memory_db_path)
+        self.memory = ConversationMemory(
+            store=_mem_store,
+            llm=self.llm,
+            session_id=config.memory_default_session,
+            max_recent=config.memory_max_recent,
+            max_topics=config.memory_max_topics,
+            extract_topics=config.memory_extract_topics,
+            auto_infer_project=config.memory_auto_infer_project,
+        )
+        self.memory.ensure_session()
+        # Wire memory into the RAG engine so every answer_query() auto-updates it
+        self.engine.memory = self.memory
+
         log.info("LocalLlamaClient ready")
 
     # ------------------------------------------------------------------
@@ -128,6 +145,28 @@ class LocalLlamaClient:
     @property
     def linker(self) -> CrossDocLinker:
         return self.knowledge.linker
+
+    # ------------------------------------------------------------------
+    # Memory shims — delegate to ConversationMemory
+    # ------------------------------------------------------------------
+
+    def set_active_project(self, project: str) -> None:
+        self.memory.set_active_project(project)
+
+    def infer_project(self) -> str:
+        return self.memory.infer_project()
+
+    def get_memory_state(self):
+        return self.memory.get_state()
+
+    def list_sessions(self) -> list[dict]:
+        return self.memory.list_sessions()
+
+    def clear_memory_session(self) -> None:
+        self.memory.clear_session()
+
+    def switch_memory_session(self, session_id: str) -> None:
+        self.memory.ensure_session(session_id)
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
