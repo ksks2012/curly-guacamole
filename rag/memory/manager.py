@@ -39,6 +39,8 @@ from utils.logger import AppLogger
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
+    from rag.memory.user_memory import UserMemoryManager
+    from rag.memory.timeline    import KnowledgeTimeline
 
 log = AppLogger.get(__name__)
 
@@ -83,18 +85,22 @@ class ConversationMemory:
     extract_topics      : Whether to call the LLM to extract topics after each turn.
     auto_infer_project  : Whether to periodically infer ``active_project`` via LLM.
     infer_project_every : Refresh ``active_project`` every N turns.
+    user_memory         : UserMemoryManager (optional; needed for C.2).
+    timeline            : KnowledgeTimeline (optional; needed for C.3).
     """
 
     def __init__(
         self,
-        store:              MemoryStore,
-        llm:                "ChatOpenAI | None" = None,
-        session_id:         str                 = _DEFAULT_SESSION,
-        max_recent:         int                 = 20,
-        max_topics:         int                 = 10,
-        extract_topics:     bool                = True,
-        auto_infer_project: bool                = True,
-        infer_project_every: int                = 10,
+        store:               MemoryStore,
+        llm:                 "ChatOpenAI | None"          = None,
+        session_id:          str                          = _DEFAULT_SESSION,
+        max_recent:          int                          = 20,
+        max_topics:          int                          = 10,
+        extract_topics:      bool                         = True,
+        auto_infer_project:  bool                         = True,
+        infer_project_every: int                          = 10,
+        user_memory:         "UserMemoryManager | None"   = None,
+        timeline:            "KnowledgeTimeline | None"   = None,
     ) -> None:
         self._store               = store
         self._llm                 = llm
@@ -104,6 +110,8 @@ class ConversationMemory:
         self._auto_infer          = auto_infer_project and (llm is not None)
         self._infer_every         = infer_project_every
         self.session_id           = session_id
+        self._user_memory         = user_memory
+        self._timeline            = timeline
         self._state: SessionState | None = None
 
     # ------------------------------------------------------------------
@@ -154,13 +162,19 @@ class ConversationMemory:
     # Core: add a turn
     # ------------------------------------------------------------------
 
-    def add_turn(self, question: str, answer: str) -> ConversationTurn:
-        """Record a Q&A exchange, update topics and optionally infer project.
+    def add_turn(
+        self,
+        question: str,
+        answer:   str,
+        doc_ids:  list[str] = [],
+    ) -> ConversationTurn:
+        """Record a Q&A exchange, update topics, user profile, and timeline.
 
         Args
         ----
         question : The user's question verbatim.
         answer   : Full LLM response text (stored truncated to 500 chars).
+        doc_ids  : Document IDs of chunks retrieved for this turn (for C.3).
 
         Returns
         -------
@@ -202,6 +216,20 @@ class ConversationMemory:
             except Exception as exc:
                 log.warning("Project inference failed: %s", exc)
 
+        # --- C.2: update user interest profile ---
+        if self._user_memory is not None:
+            try:
+                self._user_memory.update_from_topics(topics)
+            except Exception as exc:
+                log.warning("user_memory.update_from_topics() failed: %s", exc)
+
+        # --- C.3: record to knowledge timeline ---
+        if self._timeline is not None:
+            try:
+                self._timeline.record_activity(topics, doc_ids=list(doc_ids))
+            except Exception as exc:
+                log.warning("timeline.record_activity() failed: %s", exc)
+
         log.debug(
             "ConversationMemory: turn=%d  topics=%s",
             turn.seq, topics,
@@ -215,11 +243,16 @@ class ConversationMemory:
     def build_context_block(self) -> str:
         """Return a compact context string for injection into the RAG prompt.
 
+        Sections included (each omitted when empty):
+          - Active Project (C.1)
+          - Current Focus / session topics (C.1)
+          - Frequent Research Areas (C.2, if user_memory is wired)
+          - Recent Activity / timeline (C.3, if timeline is wired)
+          - Recent Questions (C.1)
+
         Returns an empty string when the session has no meaningful state.
         """
         state = self._require_state()
-        if not state.active_project and not state.current_topics and not state.recent_questions:
-            return ""
 
         lines: list[str] = []
 
@@ -229,9 +262,27 @@ class ConversationMemory:
         if state.current_topics:
             lines.append(f"Current Focus: {', '.join(state.current_topics)}")
 
+        # C.2 — user interest profile
+        if self._user_memory is not None:
+            try:
+                profile_line = self._user_memory.build_profile_block(n=5)
+                if profile_line:
+                    lines.append(profile_line)
+            except Exception as exc:
+                log.warning("user_memory.build_profile_block() failed: %s", exc)
+
+        # C.3 — recent timeline
+        if self._timeline is not None:
+            try:
+                tl_block = self._timeline.build_timeline_block(days=7)
+                if tl_block:
+                    lines.append(tl_block)
+            except Exception as exc:
+                log.warning("timeline.build_timeline_block() failed: %s", exc)
+
         if state.recent_questions:
             lines.append("Recent Questions:")
-            for t in state.recent_questions[-5:]:   # last 5 are enough for context
+            for t in state.recent_questions[-5:]:
                 lines.append(f"  • {t.question}")
 
         return "\n".join(lines)
