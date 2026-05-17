@@ -1,5 +1,6 @@
 """
-SQLite persistence for Stage C — Conversation Memory, User Memory, Knowledge Timeline.
+SQLite persistence for Stage C — Conversation Memory, User Memory, Knowledge Timeline,
+and Research Session Tracking.
 
 Schema
 ------
@@ -7,6 +8,8 @@ conversation_sessions      C.1 — session state
 conversation_turns         C.1 — per-turn Q-A history
 user_interests             C.2 — recency-weighted topic interest profile
 timeline_entries           C.3 — daily knowledge activity log
+research_sessions          C.4 — named research sessions
+research_notes             C.4 — notes attached to research sessions
 
 Uses SQLAlchemy Core (same pattern as rag/knowledge/store.py).
 WAL mode enabled for concurrent read safety.
@@ -97,6 +100,33 @@ timeline_table = Table(
     Column("doc_ids",        Text,    nullable=False, default="[]"),
     Column("question_count", Integer, nullable=False, default=1),
     Column("updated_at",     String,  nullable=False),
+)
+
+# C.4 — Research Sessions
+research_sessions_table = Table(
+    "research_sessions",
+    _metadata,
+    Column("session_id",  String,  primary_key=True),
+    Column("name",        Text,    nullable=False),
+    Column("status",      String,  nullable=False, default="active"),   # active | archived
+    Column("tags",        Text,    nullable=False, default="[]"),        # JSON list[str]
+    Column("doc_ids",     Text,    nullable=False, default="[]"),        # JSON list[str] (deduped)
+    Column("queries",     Text,    nullable=False, default="[]"),        # JSON list[str]
+    Column("created_at",  String,  nullable=False),
+    Column("updated_at",  String,  nullable=False),
+    Index("idx_rs_status", "status"),
+)
+
+# C.4 — Research Notes  (many per research session)
+research_notes_table = Table(
+    "research_notes",
+    _metadata,
+    Column("note_id",        String,  primary_key=True),
+    Column("session_id",     String,  nullable=False),
+    Column("content",        Text,    nullable=False),
+    Column("source_doc_ids", Text,    nullable=False, default="[]"),     # JSON list[str]
+    Column("created_at",     String,  nullable=False),
+    Index("idx_rn_session", "session_id"),
 )
 
 
@@ -467,3 +497,195 @@ class MemoryStore:
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # C.4 — Research Sessions
+    # ------------------------------------------------------------------
+
+    def create_research_session(
+        self,
+        session_id: str,
+        name:       str,
+        tags:       list[str] = [],
+    ) -> None:
+        """Insert a new research session row."""
+        now = _utcnow()
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_sessions_table.insert().values(
+                    session_id=session_id,
+                    name=name,
+                    status="active",
+                    tags=json.dumps(tags),
+                    doc_ids=json.dumps([]),
+                    queries=json.dumps([]),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    def get_research_session(self, session_id: str) -> dict | None:
+        """Return the research session row as a dict, or None if not found."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(research_sessions_table).where(
+                    research_sessions_table.c.session_id == session_id
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return self._rs_row_to_dict(row)
+
+    def get_research_session_by_name(self, name: str) -> dict | None:
+        """Return the most-recently-created session with this *name*, or None."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(research_sessions_table)
+                .where(research_sessions_table.c.name == name)
+                .order_by(research_sessions_table.c.created_at.desc())
+                .limit(1)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._rs_row_to_dict(row)
+
+    def list_research_sessions(self, status: str = "active") -> list[dict]:
+        """Return all sessions with the given *status*, newest first."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(research_sessions_table)
+                .where(research_sessions_table.c.status == status)
+                .order_by(research_sessions_table.c.updated_at.desc())
+            ).fetchall()
+        return [self._rs_row_to_dict(r) for r in rows]
+
+    def update_research_session_status(self, session_id: str, status: str) -> None:
+        """Set *status* to ``"active"`` or ``"archived"``."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_sessions_table.update()
+                .where(research_sessions_table.c.session_id == session_id)
+                .values(status=status, updated_at=_utcnow())
+            )
+
+    def add_query_to_research_session(
+        self,
+        session_id: str,
+        query:      str,
+        doc_ids:    list[str] = [],
+    ) -> None:
+        """Append *query* to the session's queries list and merge *doc_ids*."""
+        with self._engine.begin() as conn:
+            row = conn.execute(
+                select(research_sessions_table).where(
+                    research_sessions_table.c.session_id == session_id
+                )
+            ).fetchone()
+            if row is None:
+                return
+
+            existing_queries = self._load_json(row.queries, [])
+            existing_docs    = self._load_json(row.doc_ids, [])
+
+            # Append query (allow duplicates — preserves chronological order)
+            updated_queries = existing_queries + [query]
+            # Merge doc_ids: deduplicate while preserving order
+            updated_docs = list(dict.fromkeys(existing_docs + doc_ids))
+
+            conn.execute(
+                research_sessions_table.update()
+                .where(research_sessions_table.c.session_id == session_id)
+                .values(
+                    queries=json.dumps(updated_queries),
+                    doc_ids=json.dumps(updated_docs),
+                    updated_at=_utcnow(),
+                )
+            )
+
+    def delete_research_session(self, session_id: str) -> None:
+        """Delete a research session and all its notes."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_notes_table.delete().where(
+                    research_notes_table.c.session_id == session_id
+                )
+            )
+            conn.execute(
+                research_sessions_table.delete().where(
+                    research_sessions_table.c.session_id == session_id
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # C.4 — Research Notes
+    # ------------------------------------------------------------------
+
+    def add_research_note(
+        self,
+        note_id:        str,
+        session_id:     str,
+        content:        str,
+        source_doc_ids: list[str] = [],
+    ) -> None:
+        """Insert a note attached to *session_id*."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_notes_table.insert().values(
+                    note_id=note_id,
+                    session_id=session_id,
+                    content=content,
+                    source_doc_ids=json.dumps(source_doc_ids),
+                    created_at=_utcnow(),
+                )
+            )
+        # Touch the parent session's updated_at
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_sessions_table.update()
+                .where(research_sessions_table.c.session_id == session_id)
+                .values(updated_at=_utcnow())
+            )
+
+    def get_research_notes(self, session_id: str) -> list[dict]:
+        """Return all notes for *session_id*, oldest first."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(research_notes_table)
+                .where(research_notes_table.c.session_id == session_id)
+                .order_by(research_notes_table.c.created_at.asc())
+            ).fetchall()
+        return [
+            {
+                "note_id":        r.note_id,
+                "session_id":     r.session_id,
+                "content":        r.content,
+                "source_doc_ids": self._load_json(r.source_doc_ids, []),
+                "created_at":     r.created_at,
+            }
+            for r in rows
+        ]
+
+    def delete_research_note(self, note_id: str) -> None:
+        """Delete a single note by *note_id*."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                research_notes_table.delete().where(
+                    research_notes_table.c.note_id == note_id
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _rs_row_to_dict(self, row) -> dict:
+        return {
+            "session_id": row.session_id,
+            "name":       row.name,
+            "status":     row.status,
+            "tags":       self._load_json(row.tags, []),
+            "doc_ids":    self._load_json(row.doc_ids, []),
+            "queries":    self._load_json(row.queries, []),
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
