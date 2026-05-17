@@ -196,7 +196,15 @@ class RAGEngine:
                     if hasattr(response, "content")
                     else str(response)
                 )
-                self.memory.add_turn(query, answer_text)
+                # Collect unique doc_ids from retrieved chunks (for C.3 timeline)
+                doc_ids = list(
+                    dict.fromkeys(
+                        doc.metadata.get("doc_id", "")
+                        for doc in docs
+                        if doc.metadata.get("doc_id")
+                    )
+                )
+                self.memory.add_turn(query, answer_text, doc_ids=doc_ids)
             except Exception as exc:
                 log.warning("memory.add_turn() failed: %s", exc)
 

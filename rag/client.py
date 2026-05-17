@@ -15,8 +15,10 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
-from rag.memory.manager import ConversationMemory
-from rag.memory.store import MemoryStore
+from rag.memory.manager    import ConversationMemory
+from rag.memory.store      import MemoryStore
+from rag.memory.user_memory import UserMemoryManager
+from rag.memory.timeline   import KnowledgeTimeline
 from rag.reranker import RerankerFactory
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.searcher import Searcher
@@ -105,9 +107,11 @@ class LocalLlamaClient:
             linker=CrossDocLinker(db=self.db),
         )
 
-        # Stage C.1 — Conversation Memory
-        _mem_store  = MemoryStore(db_path=config.memory_db_path)
-        self.memory = ConversationMemory(
+        # Stage C — Memory subsystems (C.1 + C.2 + C.3)
+        _mem_store        = MemoryStore(db_path=config.memory_db_path)
+        self.user_memory  = UserMemoryManager(store=_mem_store)
+        self.timeline     = KnowledgeTimeline(store=_mem_store)
+        self.memory       = ConversationMemory(
             store=_mem_store,
             llm=self.llm,
             session_id=config.memory_default_session,
@@ -115,6 +119,8 @@ class LocalLlamaClient:
             max_topics=config.memory_max_topics,
             extract_topics=config.memory_extract_topics,
             auto_infer_project=config.memory_auto_infer_project,
+            user_memory=self.user_memory,
+            timeline=self.timeline,
         )
         self.memory.ensure_session()
         # Wire memory into the RAG engine so every answer_query() auto-updates it
@@ -167,6 +173,34 @@ class LocalLlamaClient:
 
     def switch_memory_session(self, session_id: str) -> None:
         self.memory.ensure_session(session_id)
+
+    # ------------------------------------------------------------------
+    # User Memory shims (C.2)
+    # ------------------------------------------------------------------
+
+    def get_user_interests(self, n: int = 10) -> list[dict]:
+        """Return top *n* user research interests by recency-weighted score."""
+        return self.user_memory.get_top_interests(n)
+
+    def get_user_profile(self):
+        """Return a UserProfile snapshot."""
+        return self.user_memory.get_profile()
+
+    # ------------------------------------------------------------------
+    # Timeline shims (C.3)
+    # ------------------------------------------------------------------
+
+    def get_timeline_recent(self, days: int = 30) -> list[dict]:
+        """Return daily timeline entries for the last *days* days."""
+        return self.timeline.get_recent(days)
+
+    def get_timeline_period(self, year: int, month: int | None = None) -> list[dict]:
+        """Return timeline entries for *year* (or *year*+*month*)."""
+        return self.timeline.get_period(year, month)
+
+    def get_yearly_summary(self, year: int) -> dict[str, int]:
+        """Return ``{topic: appearance_count}`` for *year*, descending."""
+        return self.timeline.get_yearly_summary(year)
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
