@@ -16,6 +16,9 @@ from nicegui import ui
 
 from ui.index_controller import IndexController
 
+# Mutable dict to hold per-doc enrich state visible to render_doc_list closure
+_enrich_state: dict[str, str] = {}  # doc_id -> "running" | "done" | "error: ..."
+
 
 def build(
     idx_ctrl: IndexController,
@@ -200,17 +203,65 @@ def build(
                         if is_sel
                         else "border-l-4 border-transparent"
                     )
+                    enrich_status = _enrich_state.get(doc_id, "")
                     with ui.card().classes(
-                        f"w-full cursor-pointer hover:shadow-md mb-1 {border}"
-                    ).on(
-                        "click",
-                        lambda d=doc_id: (
-                            _selected_doc.update({"id": d}),
-                            render_doc_detail.refresh(),
-                            render_doc_list.refresh(),
-                        ),
+                        f"w-full mb-1 {border}"
                     ):
-                        ui.label(display_title).classes("text-sm font-mono text-gray-700")
+                        with ui.row().classes("items-center justify-between w-full gap-2"):
+                            ui.label(display_title).classes(
+                                "text-sm font-mono text-gray-700 flex-1 min-w-0 truncate"
+                                " cursor-pointer"
+                            ).on(
+                                "click",
+                                lambda d=doc_id: (
+                                    _selected_doc.update({"id": d}),
+                                    render_doc_detail.refresh(),
+                                    render_doc_list.refresh(),
+                                ),
+                            )
+
+                            if enrich_status == "running":
+                                ui.spinner(size="xs").classes("text-blue-400")
+                            elif enrich_status.startswith("error"):
+                                ui.label("✗").classes("text-xs text-red-400").tooltip(
+                                    enrich_status
+                                )
+                            elif enrich_status == "done":
+                                ui.label("✔").classes("text-xs text-green-500").tooltip(
+                                    "Enrichment complete"
+                                )
+
+                            async def _do_enrich(d=doc_id):
+                                # Capture the client BEFORE any refresh; refreshing the
+                                # list destroys all child elements (including this slot),
+                                # so the context must be restored after the await.
+                                client = ui.context.client
+                                _enrich_state[d] = "running"
+                                render_doc_list.refresh()
+                                stats = await asyncio.to_thread(
+                                    idx_ctrl.enrich_doc, d, False
+                                )
+                                if stats.get("failed", 0) == -1:
+                                    _enrich_state[d] = f"error: {stats.get('error', '?')}"
+                                    msg, kind = f"Enrich failed for {d}", "negative"
+                                else:
+                                    _enrich_state[d] = "done"
+                                    msg = (
+                                        f"Enriched {d}: "
+                                        f"+{stats['enriched']} "
+                                        f"skip={stats['skipped']} "
+                                        f"fail={stats['failed']}"
+                                    )
+                                    kind = "positive"
+                                with client:
+                                    render_doc_list.refresh()
+                                    ui.notify(msg, type=kind)
+
+                            ui.button(
+                                "✦", on_click=_do_enrich
+                            ).props("flat dense").classes(
+                                "text-xs text-purple-500 px-1"
+                            ).tooltip("Run knowledge extraction (enrich)")
 
         render_doc_list()
 

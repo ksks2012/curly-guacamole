@@ -11,6 +11,8 @@ a new document is embedded.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from nicegui import ui
 
 from ui.search_controller import RERANKER_UNAVAILABLE, SearchController
@@ -410,4 +412,4 @@ def build(ctrl: SearchController, on_search: list | None = None) -> ui.Select:
 
             render_detail()
 
-    return _fi_source
+    return SimpleNamespace(fi_source=_fi_source, query_input=query_input)
