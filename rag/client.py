@@ -284,6 +284,15 @@ class LocalLlamaClient:
     def list_tags(self) -> list[str]:
         return self.searcher.list_tags()
 
+    def browse_chunks(
+        self,
+        doc_id: str | None = None,
+        tag: str | None = None,
+        topic: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        return self.searcher.browse_chunks(doc_id=doc_id, tag=tag, topic=topic, limit=limit)
+
     def rebuild_bm25(self) -> None:
         self.searcher.rebuild_bm25()
 

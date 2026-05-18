@@ -140,6 +140,44 @@ class Searcher:
     def list_tags(self) -> list[str]:
         return self.list_field_values("tags")
 
+    def browse_chunks(
+        self,
+        doc_id: str | None = None,
+        tag: str | None = None,
+        topic: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return up to *limit* chunks with content and full metadata.
+
+        Each dict has keys ``content`` (page text) and ``metadata`` (raw dict).
+        Filtering by *tag* and *topic* uses post-fetch matching because Chroma
+        does not support contains-in-csv queries natively.
+        """
+        kwargs: dict = {"include": ["documents", "metadatas"]}
+        if doc_id:
+            kwargs["where"] = {"doc_id": {"$eq": doc_id}}
+        result = self._db.get(**kwargs)
+        docs  = result.get("documents") or []
+        metas = result.get("metadatas") or []
+
+        chunks: list[dict] = []
+        for text, meta in zip(docs, metas):
+            if not text:
+                continue
+            m = meta or {}
+            if tag:
+                raw_tags = [t.strip() for t in str(m.get("tags", "")).split(",") if t.strip()]
+                if tag not in raw_tags:
+                    continue
+            if topic:
+                raw_topics = [t.strip() for t in str(m.get("topics", "")).split(",") if t.strip()]
+                if topic not in raw_topics:
+                    continue
+            chunks.append({"content": text, "metadata": m})
+            if limit and len(chunks) >= limit:
+                break
+        return chunks
+
     # ------------------------------------------------------------------
     # BM25 index management
     # ------------------------------------------------------------------
