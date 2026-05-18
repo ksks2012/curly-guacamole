@@ -30,6 +30,9 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Topic extraction** — LLM extracts 1-5 topic tags from each Q-A turn to keep `current_topics` up to date
 - **Project inference** — periodically infers `active_project` from recent conversation history via LLM
 - **SQLite-backed sessions** — all memory persists across restarts; multiple named sessions supported
+- **Semantic user memory** (C.2) — long-term recency-weighted interest profile across all sessions; EMA scoring surfaces frequently and recently discussed topics; injected into every RAG prompt as a `Frequent Research Areas` hint
+- **Knowledge timeline** (C.3) — daily activity log aggregating topics and retrieved document IDs per calendar day; enables queries like "what was I working on last week?"; injects a `Recent Activity` block into the prompt
+- **Research session tracking** (C.4) — named research sessions that group related queries, retrieved documents, and free-form notes; an *active session* auto-accumulates every Q-A turn; session context injected into the RAG prompt; supports archive/restore lifecycle
 
 ## Requirements
 
@@ -254,6 +257,72 @@ sessions = client.list_sessions()
 client.clear_memory_session()
 ```
 
+### Semantic User Memory (Stage C.2)
+
+Builds a long-term interest profile across all sessions using recency-weighted scoring.
+Automatically updated after every `answer_query()` turn.
+
+```python
+# Inspect the interest profile
+interests = client.get_user_interests(n=10)
+# [{"topic": "RAG Architecture", "count": 12, "weight": 8.34, ...}, ...]
+
+profile = client.get_user_profile()
+print(profile.top_interests)      # top 20 weighted topics
+print(profile.total_topics_seen)  # distinct topic count
+```
+
+### Knowledge Timeline (Stage C.3)
+
+Logs daily activity automatically. Useful for reviewing what was worked on over time.
+
+```python
+# Recent activity
+recent = client.get_timeline_recent(days=30)
+# [{"date": "2026-05-17", "topics": ["RAG", "Memory"], "question_count": 5}, ...]
+
+# Filter by month
+may = client.get_timeline_period(2026, month=5)
+
+# Yearly topic frequency map
+summary = client.get_yearly_summary(2026)
+# {"RAG Architecture": 34, "Vector Search": 18, ...}
+```
+
+### Research Session Tracking (Stage C.4)
+
+Group related queries, retrieved documents, and notes under a named research session.
+
+```python
+# Start a new research session (automatically becomes the active session)
+session = client.start_research_session("Agentic RAG research", tags=["RAG", "Agents"])
+
+# Every subsequent answer_query() call auto-records the query and doc_ids
+client.answer_query("What is the ReAct pattern?")
+client.answer_query("How does Reflexion differ from ReAct?")
+
+# Add a note (manually written or LLM-generated)
+client.add_research_note(
+    "ReAct alternates reasoning and acting; Reflexion adds self-evaluation.",
+    source_doc_ids=["doc-42"],
+)
+
+# Inspect the session
+session = client.get_research_session()
+print(session.queries)   # ["What is the ReAct pattern?", ...]
+print(session.doc_ids)   # all unique docs retrieved across the session
+notes = client.get_research_notes()
+
+# List all active sessions
+all_sessions = client.list_research_sessions()
+
+# Archive when done
+client.archive_research_session()
+
+# Restore or browse archived sessions
+archived = client.list_research_sessions(archived=True)
+```
+
 ## Project Structure
 
 ```
@@ -302,8 +371,11 @@ client.clear_memory_session()
 │   │   └── manager.py            # KnowledgeManager — coordinates B.1–B.4 operations
 │   ├── memory/
 │   │   ├── models.py             # ConversationTurn, SessionState dataclasses (C.1)
-│   │   ├── store.py              # MemoryStore — SQLite persistence for sessions and turns (C.1)
-│   │   └── manager.py            # ConversationMemory — session lifecycle, topic extraction (C.1)
+│   │   ├── store.py              # MemoryStore — SQLite persistence for all memory subsystems (C.1–C.4)
+│   │   ├── manager.py            # ConversationMemory — session lifecycle, topic extraction, prompt injection (C.1)
+│   │   ├── user_memory.py        # UserMemoryManager — EMA-weighted long-term interest profile (C.2)
+│   │   ├── timeline.py           # KnowledgeTimeline — daily activity log with topic + doc tracking (C.3)
+│   │   └── research_session.py   # ResearchSessionManager — named sessions, queries, notes lifecycle (C.4)
 │   └── retrieval/
 │       ├── bm25.py               # BM25Index + RRF fusion
 │       └── filters.py            # SearchFilter — Chroma where-clause builder
@@ -316,6 +388,8 @@ client.clear_memory_session()
 │   ├── testing_qa.py             # B.2 QA generation unit tests
 │   ├── testing_clusterer.py      # B.3 topic clustering unit tests
 │   ├── testing_memory.py         # C.1 conversation memory unit tests
+│   ├── testing_user_memory.py    # C.2/C.3 user memory and timeline unit tests
+│   ├── testing_research_session.py # C.4 research session unit tests
 │   └── ...                       # additional integration and pipeline tests
 ├── data/
 │   └── uploads/                  # Uploaded files (path configurable via upload_dir)
