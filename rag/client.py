@@ -7,6 +7,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
 from utils.logger import AppLogger
+from rag.embeddings import OpenRouterEmbeddings
 from rag.engine import RAGEngine
 from rag.indexer import Indexer
 from rag.ingest.document_ingester import DocumentIngester
@@ -43,12 +44,19 @@ class LocalLlamaClient:
         log.debug("  db_url=%s",                      config.db_url)
         log.debug("  reranker_type=%s",               config.reranker_type)
 
-        log.info("Building embeddings client → %s", config.embed_base)
-        self.embed = OpenAIEmbeddings(
-            openai_api_key=config.api_key,
-            openai_api_base=config.embed_base,
-            model=config.embed_model,
-        )
+        log.info("Building embeddings client → %s (provider=%s)", config.embed_base, config.model_provider)
+        if config.model_provider == "openrouter":
+            self.embed = OpenRouterEmbeddings(
+                model=config.embed_model,
+                api_key=config.embed_api_key,
+                base_url=config.embed_base,
+            )
+        else:
+            self.embed = OpenAIEmbeddings(
+                openai_api_key=config.embed_api_key,
+                openai_api_base=config.embed_base,
+                model=config.embed_model,
+            )
 
         log.info("Opening Chroma store → %s  collection=%s",
                  config.persist_directory, config.setup_rag_collection)
@@ -63,7 +71,7 @@ class LocalLlamaClient:
         log.info("Building LLM client → %s", config.llm_base)
         self.llm = ChatOpenAI(
             base_url=config.llm_base,
-            api_key=config.api_key,
+            api_key=config.llm_api_key,
             model=config.llm_model,
             **config.llm_kwargs,
         )

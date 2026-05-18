@@ -162,11 +162,46 @@ class AppConfig:
         """Number of extra phrasings to generate (total candidates = n+1 including original)."""
         return int(self._data.get("query_expansion_n", 3))
 
+    # --- Provider ---
+
+    @property
+    def model_provider(self) -> str:
+        """Selects which provider adapter to use for embeddings and LLM.
+
+        Supported values:
+            ``"openai"``      — standard ``OpenAIEmbeddings`` + ``ChatOpenAI``
+                                (default; works with local llama.cpp / Ollama too)
+            ``"openrouter"``  — ``OpenRouterEmbeddings`` (direct httpx) + ``ChatOpenAI``
+                                Set ``llm_base`` to ``https://openrouter.ai/api/v1``
+                                and ``llm_api_key`` to your ``sk-or-...`` key.
+        """
+        return self._data.get("model_provider", "openai")
+
     # --- Auth ---
 
     @property
     def api_key(self) -> str:
         return self._data.get("api_key", "sk-no-key-required")
+
+    @property
+    def embed_api_key(self) -> str:
+        """API key for the embedding server.
+
+        Falls back to ``api_key`` when not explicitly set.  Useful when the
+        LLM provider (e.g. OpenRouter) requires a different key than the
+        embedding server (e.g. local llama.cpp or real OpenAI embeddings).
+        """
+        return self._data.get("embed_api_key") or self.api_key
+
+    @property
+    def llm_api_key(self) -> str:
+        """API key for the LLM server.
+
+        Falls back to ``api_key`` when not explicitly set.  Set this to your
+        OpenRouter key (``sk-or-...``) while keeping ``embed_api_key`` for the
+        embedding server.
+        """
+        return self._data.get("llm_api_key") or self.api_key
 
     # --- Runtime / testing ---
 
