@@ -16,6 +16,7 @@ setup(
         "chromadb",
         "pypdf",
         "pyyaml",
+        "httpx",
     ],
     include_package_data=True,
     package_data={
