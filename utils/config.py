@@ -177,6 +177,16 @@ class AppConfig:
         """
         return self._data.get("model_provider", "openai")
 
+    @property
+    def requests_rate_limit(self) -> int:
+        """Maximum embedding API calls per 60-second rolling window.
+
+        Only used when ``model_provider="openrouter"``.  Set to ``0`` to
+        disable throttling.  OpenRouter free-tier models are typically capped
+        at 20 requests/min.
+        """
+        return int(self._data.get("requests_rate_limit", 20))
+
     # --- Auth ---
 
     @property

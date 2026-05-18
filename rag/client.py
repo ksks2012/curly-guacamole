@@ -50,6 +50,7 @@ class LocalLlamaClient:
                 model=config.embed_model,
                 api_key=config.embed_api_key,
                 base_url=config.embed_base,
+                requests_per_minute=config.requests_rate_limit,
             )
         else:
             self.embed = OpenAIEmbeddings(
