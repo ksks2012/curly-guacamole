@@ -39,8 +39,9 @@ from utils.logger import AppLogger
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
-    from rag.memory.user_memory import UserMemoryManager
-    from rag.memory.timeline    import KnowledgeTimeline
+    from rag.memory.user_memory      import UserMemoryManager
+    from rag.memory.timeline         import KnowledgeTimeline
+    from rag.memory.research_session import ResearchSessionManager
 
 log = AppLogger.get(__name__)
 
@@ -87,20 +88,22 @@ class ConversationMemory:
     infer_project_every : Refresh ``active_project`` every N turns.
     user_memory         : UserMemoryManager (optional; needed for C.2).
     timeline            : KnowledgeTimeline (optional; needed for C.3).
+    research             : ResearchSessionManager (optional; needed for C.4).
     """
 
     def __init__(
         self,
         store:               MemoryStore,
-        llm:                 "ChatOpenAI | None"          = None,
-        session_id:          str                          = _DEFAULT_SESSION,
-        max_recent:          int                          = 20,
-        max_topics:          int                          = 10,
-        extract_topics:      bool                         = True,
-        auto_infer_project:  bool                         = True,
-        infer_project_every: int                          = 10,
-        user_memory:         "UserMemoryManager | None"   = None,
-        timeline:            "KnowledgeTimeline | None"   = None,
+        llm:                 "ChatOpenAI | None"                  = None,
+        session_id:          str                                  = _DEFAULT_SESSION,
+        max_recent:          int                                  = 20,
+        max_topics:          int                                  = 10,
+        extract_topics:      bool                                 = True,
+        auto_infer_project:  bool                                 = True,
+        infer_project_every: int                                  = 10,
+        user_memory:         "UserMemoryManager | None"           = None,
+        timeline:            "KnowledgeTimeline | None"           = None,
+        research:            "ResearchSessionManager | None"      = None,
     ) -> None:
         self._store               = store
         self._llm                 = llm
@@ -112,6 +115,7 @@ class ConversationMemory:
         self.session_id           = session_id
         self._user_memory         = user_memory
         self._timeline            = timeline
+        self._research            = research
         self._state: SessionState | None = None
 
     # ------------------------------------------------------------------
@@ -230,6 +234,13 @@ class ConversationMemory:
             except Exception as exc:
                 log.warning("timeline.record_activity() failed: %s", exc)
 
+        # --- C.4: update active research session ---
+        if self._research is not None:
+            try:
+                self._research.on_turn(question, doc_ids=list(doc_ids))
+            except Exception as exc:
+                log.warning("research.on_turn() failed: %s", exc)
+
         log.debug(
             "ConversationMemory: turn=%d  topics=%s",
             turn.seq, topics,
@@ -279,6 +290,15 @@ class ConversationMemory:
                     lines.append(tl_block)
             except Exception as exc:
                 log.warning("timeline.build_timeline_block() failed: %s", exc)
+
+        # C.4 — active research session
+        if self._research is not None:
+            try:
+                rs_block = self._research.build_session_block()
+                if rs_block:
+                    lines.append(rs_block)
+            except Exception as exc:
+                log.warning("research.build_session_block() failed: %s", exc)
 
         if state.recent_questions:
             lines.append("Recent Questions:")

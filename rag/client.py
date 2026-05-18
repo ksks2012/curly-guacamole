@@ -15,10 +15,11 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
-from rag.memory.manager    import ConversationMemory
-from rag.memory.store      import MemoryStore
-from rag.memory.user_memory import UserMemoryManager
-from rag.memory.timeline   import KnowledgeTimeline
+from rag.memory.manager          import ConversationMemory
+from rag.memory.store            import MemoryStore
+from rag.memory.user_memory      import UserMemoryManager
+from rag.memory.timeline         import KnowledgeTimeline
+from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.searcher import Searcher
@@ -107,10 +108,11 @@ class LocalLlamaClient:
             linker=CrossDocLinker(db=self.db),
         )
 
-        # Stage C — Memory subsystems (C.1 + C.2 + C.3)
+        # Stage C — Memory subsystems (C.1 + C.2 + C.3 + C.4)
         _mem_store        = MemoryStore(db_path=config.memory_db_path)
         self.user_memory  = UserMemoryManager(store=_mem_store)
         self.timeline     = KnowledgeTimeline(store=_mem_store)
+        self.research     = ResearchSessionManager(store=_mem_store)
         self.memory       = ConversationMemory(
             store=_mem_store,
             llm=self.llm,
@@ -121,6 +123,7 @@ class LocalLlamaClient:
             auto_infer_project=config.memory_auto_infer_project,
             user_memory=self.user_memory,
             timeline=self.timeline,
+            research=self.research,
         )
         self.memory.ensure_session()
         # Wire memory into the RAG engine so every answer_query() auto-updates it
@@ -201,6 +204,42 @@ class LocalLlamaClient:
     def get_yearly_summary(self, year: int) -> dict[str, int]:
         """Return ``{topic: appearance_count}`` for *year*, descending."""
         return self.timeline.get_yearly_summary(year)
+
+    # ------------------------------------------------------------------
+    # Research Session shims (C.4)
+    # ------------------------------------------------------------------
+
+    def start_research_session(self, name: str, tags: list[str] = [], set_active: bool = True):
+        """Create a new research session and optionally set it as active."""
+        from rag.memory.research_session import ResearchSession
+        session: ResearchSession = self.research.create(name, tags=tags)
+        if set_active:
+            self.research.set_active(session.session_id)
+        return session
+
+    def get_research_session(self, session_id: str | None = None):
+        """Return the active session (or by *session_id*)."""
+        if session_id:
+            return self.research.get(session_id)
+        return self.research.get_active_session()
+
+    def list_research_sessions(self, archived: bool = False) -> list:
+        """List active (or archived) research sessions."""
+        return self.research.list_archived() if archived else self.research.list_active()
+
+    def archive_research_session(self, session_id: str | None = None) -> None:
+        """Archive a session (defaults to the active one)."""
+        sid = session_id or self.research.active_session_id
+        if sid:
+            self.research.archive(sid)
+
+    def add_research_note(self, content: str, source_doc_ids: list[str] = [], session_id: str | None = None):
+        """Add a note to the active research session (or *session_id*)."""
+        return self.research.add_note(content, session_id=session_id, source_doc_ids=source_doc_ids)
+
+    def get_research_notes(self, session_id: str | None = None) -> list:
+        """Return all notes for the active session (or *session_id*)."""
+        return self.research.get_notes(session_id)
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
