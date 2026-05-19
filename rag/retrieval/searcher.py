@@ -113,6 +113,10 @@ class Searcher:
             mapping[doc_id] = (m.get("title") or "").strip() or doc_id
         return dict(sorted(mapping.items()))
 
+    # Fields stored as comma-separated values in Chroma — must be split when listing.
+    # ka_topics/ka_keywords/ka_entities written by B.1; topic_id (scalar) by B.3.
+    _CSV_FIELDS = {"tags", "topics", "ka_topics", "ka_keywords", "ka_entities"}
+
     def list_field_values(self, field: str) -> list[str]:
         result = self._db.get(include=["metadatas"])
         values: set[str] = set()
@@ -122,7 +126,7 @@ class Searcher:
             raw = m.get(field, "")
             if not raw:
                 continue
-            if field == "tags":
+            if field in self._CSV_FIELDS:
                 for t in str(raw).split(","):
                     t = t.strip()
                     if t:
