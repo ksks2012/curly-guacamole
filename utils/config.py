@@ -83,7 +83,7 @@ class AppConfig:
 
     @property
     def embed_base(self) -> str:
-        return self._data.get("embed_base", "http://localhost:8080/v1/")
+        return self._data.get("embed_base", "http://localhost:8080/v1").rstrip("/")
 
     @property
     def embed_model(self) -> str:
@@ -93,7 +93,7 @@ class AppConfig:
 
     @property
     def llm_base(self) -> str:
-        return self._data.get("llm_base", "http://localhost:8080/v1/")
+        return self._data.get("llm_base", "http://localhost:8080/v1").rstrip("/")
 
     @property
     def llm_model(self) -> str:

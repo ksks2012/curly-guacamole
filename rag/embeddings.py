@@ -22,8 +22,11 @@ class OpenRouterEmbeddings(Embeddings):
         model:                OpenRouter embedding model slug,
                               e.g. ``"text-embedding-3-small"``.
         api_key:              OpenRouter API key (``sk-or-...``).
-        base_url:             Full URL of the embeddings endpoint.
-                              Defaults to ``"https://openrouter.ai/api/v1/embeddings"``.
+        base_url:             Base URL of the OpenAI-compatible API server,
+                              e.g. ``"https://openrouter.ai/api/v1"``.
+                              The ``/embeddings`` path is appended automatically,
+                              matching the behaviour of ``OpenAIEmbeddings``.
+                              Defaults to ``"https://openrouter.ai/api/v1"``.
         requests_per_minute:  Maximum API calls per 60-second rolling window.
                               ``0`` (default) means unlimited.
         batch_size:           Number of texts per individual HTTP request when
@@ -35,13 +38,17 @@ class OpenRouterEmbeddings(Embeddings):
         self,
         model: str,
         api_key: str,
-        base_url: str = "https://openrouter.ai/api/v1/embeddings",
+        base_url: str = "https://openrouter.ai/api/v1",
         requests_per_minute: int = 0,
         batch_size: int = 64,
     ) -> None:
         self.model = model
         self.api_key = api_key
-        self.url = base_url
+        # Normalise base_url the same way OpenAIEmbeddings does: strip trailing
+        # slash, then append /embeddings.  This means embed_base in config.yaml
+        # always means the API root (e.g. https://openrouter.ai/api/v1) for
+        # both providers — no manual /embeddings suffix required.
+        self.url = base_url.rstrip("/") + "/embeddings"
         self._batch_size = batch_size
         self._limiter = RateLimiter(requests_per_minute)
         # Derive worker count from rate limit so we can saturate it with
