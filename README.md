@@ -55,12 +55,18 @@ Edit `etc/config.yaml`:
 
 ```yaml
 # --- Servers ---
-embed_base: "http://localhost:8080/v1/"
-llm_base:   "http://localhost:8080/v1/"
-embed_model: "text-embedding-ada-002"
-llm_model:   "local-model"
-api_key:     "sk-no-key-required"
+embed_base:   "http://localhost:8080/v1"   # API root URL (no trailing slash, no /embeddings suffix)
+llm_base:     "http://localhost:8080/v1"
+embed_model:  "text-embedding-ada-002"
+llm_model:    "local-model"
+api_key:      "sk-no-key-required"          # default fallback key
+embed_api_key: ""                           # embedding API key (falls back to api_key)
+llm_api_key:   ""                           # LLM API key (falls back to api_key)
 llm_kwargs:  {}
+
+# --- Provider ---
+model_provider:      "openai"   # "openai" | "openrouter"
+requests_rate_limit: 20         # max embedding requests/min (0 = unlimited; openrouter free tier ≈ 20)
 
 # --- Upload ---
 upload_dir: "./data/uploads"      # directory where uploaded files are saved
@@ -156,7 +162,7 @@ python cmd/dashboard.py
 # open http://localhost:8888
 ```
 
-The dashboard is an engineering tool for tuning retrieval — not a demo. It has four tabs:
+The dashboard is an engineering tool for tuning retrieval — not a demo. It has six tabs:
 
 **Search tab**
 
@@ -182,6 +188,20 @@ With rerank on:
 - Drop a PDF or click to select — the file is saved to `upload_dir` immediately and embedding runs in the background (upload confirmation appears before embedding completes)
 - Indexed document list updates automatically after each upload
 - The Search tab's filter dropdown is refreshed with any newly indexed `doc_id`
+
+**Knowledge tab**
+
+- Run Stage B operations (enrich, QA generation, topic clustering, cross-doc linking) for any indexed `doc_id` directly from the UI
+- Inspect per-chunk enrichment status and cluster assignments without running scripts
+
+**Notion tab**
+
+- Sync Notion pages to local RawStore (incremental or full), embed into Chroma, or run both in one click
+- Full-sync checkbox ignores stored cursor and re-fetches all pages
+- Status badges show pages seen / updated / skipped / errors after each operation
+- Hybrid search and RAG query over synced Notion content, with configurable `k` / `fetch-k`
+- Page list refreshes after every sync; shows page titles and sync status
+- Shows "Notion not configured" when `notion_token` is not set
 
 **Config tab**
 
@@ -333,9 +353,13 @@ archived = client.list_research_sessions(archived=True)
 │   ├── search_tab.py             # Search tab UI — query bar, filters, result columns, chunk detail
 │   ├── trace_tab.py              # Trace tab UI — per-stage pipeline diagnostics
 │   ├── index_tab.py              # Index tab UI — chunking options, file upload, doc list
+│   ├── knowledge_tab.py          # Knowledge tab UI — Stage B operations per doc_id
+│   ├── notion_tab.py             # Notion tab UI — sync controls, page list, hybrid search / RAG
 │   ├── config_tab.py             # Config tab UI — form-based schema-driven settings editor
 │   ├── search_controller.py      # Search tab logic (state, search, filter)
 │   ├── index_controller.py       # Index tab logic (save file, embed, list docs)
+│   ├── knowledge_controller.py   # Knowledge tab logic (enrich, QA, cluster, link)
+│   ├── notion_controller.py      # Notion tab logic (sync, embed, search, RAG query)
 │   └── config_controller.py      # Config tab logic (load, save, hot-reload, schema)
 ├── etc/
 │   └── config.yaml               # All runtime settings
@@ -343,6 +367,8 @@ archived = client.list_research_sessions(archived=True)
 │   ├── client.py                 # LocalLlamaClient — coordinates all RAG components
 │   ├── engine.py                 # RAGEngine — query expansion, retrieval, rerank, generation, memory
 │   ├── indexer.py                # Indexer — SQLRecordManager lifecycle and document ingestion
+│   ├── embeddings.py             # OpenRouterEmbeddings (multi-threaded httpx) + OpenAI wrapper
+│   ├── rate_limiter.py           # RateLimiter — thread-safe sliding-window request throttle
 │   ├── prompt.py                 # All prompt templates (RAG, expansion, knowledge, memory)
 │   ├── reranker.py               # BaseReranker, CrossEncoderReranker, LLMReranker, RerankerFactory
 │   ├── ingest/
@@ -384,13 +410,24 @@ archived = client.list_research_sessions(archived=True)
 │   ├── file_processor.py         # PDF chunking, YAML / JSON / CSV helpers
 │   └── logger.py                 # AppLogger — centralised logging setup
 ├── testing/
-│   ├── testing_extractor.py      # B.1 knowledge extraction unit tests
-│   ├── testing_qa.py             # B.2 QA generation unit tests
-│   ├── testing_clusterer.py      # B.3 topic clustering unit tests
-│   ├── testing_memory.py         # C.1 conversation memory unit tests
-│   ├── testing_user_memory.py    # C.2/C.3 user memory and timeline unit tests
+│   ├── testing_extractor.py        # B.1 knowledge extraction unit tests
+│   ├── testing_qa.py               # B.2 QA generation unit tests
+│   ├── testing_clusterer.py        # B.3 topic clustering unit tests
+│   ├── testing_linker.py           # B.4 cross-doc linking unit tests
+│   ├── testing_memory.py           # C.1 conversation memory unit tests
+│   ├── testing_user_memory.py      # C.2/C.3 user memory and timeline unit tests
 │   ├── testing_research_session.py # C.4 research session unit tests
-│   └── ...                       # additional integration and pipeline tests
+│   ├── testing_notion_api.py       # Notion REST API integration tests
+│   ├── testing_sync.py             # NotionSyncPipeline integration tests
+│   ├── testing_embedder.py         # NotionEmbedder unit tests
+│   ├── testing_pipeline.py         # NotionRAGClient end-to-end tests
+│   ├── testing_openrouter.py       # OpenRouterEmbeddings rate-limit + threading tests
+│   ├── testing_chunker.py          # Chunker strategy unit tests
+│   ├── testing_blocks.py           # Block-level parsing unit tests
+│   ├── testing_models.py           # Domain model unit tests
+│   ├── testing_knowledge.py        # Knowledge store integration tests
+│   ├── testing_llm_config.py       # LLM / provider config smoke tests
+│   └── testing_eval.py             # Retrieval evaluation helpers
 ├── data/
 │   └── uploads/                  # Uploaded files (path configurable via upload_dir)
 ├── my_db/
