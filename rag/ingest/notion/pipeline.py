@@ -84,7 +84,7 @@ class NotionRAGClient:
         self._full_sync = full_sync
 
         self._store  = RawStore(config.raw_db_path)
-        self._client = NotionClient(config.notion_token)
+        self._client = NotionClient(config.notion_token, requests_per_minute=config.requests_rate_limit)
 
         # Reuse or create the workspace record.
         ws_name = config.notion_workspace_id or "Notion"
@@ -118,6 +118,7 @@ class NotionRAGClient:
             store=self._store,
             data_source_id=self._config.notion_data_source_id,
             full_sync=self._full_sync,
+            requests_per_minute=self._config.requests_rate_limit,
         )
         result = pipeline.sync()
         # Ensure workspace is in store after sync

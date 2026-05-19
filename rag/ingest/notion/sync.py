@@ -94,8 +94,9 @@ class NotionSyncPipeline:
         data_source_id: str | None = None,
         progress_cb: Callable[[int, int | None], None] | None = None,
         full_sync: bool = False,
+        requests_per_minute: int = 0,
     ) -> None:
-        self._client         = NotionClient(token)
+        self._client         = NotionClient(token, requests_per_minute=requests_per_minute)
         self._workspace      = workspace
         self._store          = store
         self._data_source_id = data_source_id
