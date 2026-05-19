@@ -215,3 +215,15 @@ class IndexController:
         except Exception as e:
             log.error("get_doc_info failed for %r: %s", doc_id, e)
             return {"doc_id": doc_id, "chunk_count": "?"}
+
+    def enrich_doc(self, doc_id: str, overwrite: bool = False) -> dict:
+        """Run knowledge extraction on all chunks for *doc_id*.
+
+        Intended to be called in a background thread (slow LLM calls).
+        Returns dict with keys ``enriched``, ``skipped``, ``failed``.
+        """
+        try:
+            return self._client.enrich_doc(doc_id, overwrite=overwrite)
+        except Exception as e:
+            log.error("enrich_doc failed for %r: %s", doc_id, e, exc_info=True)
+            return {"enriched": 0, "skipped": 0, "failed": -1, "error": str(e)}

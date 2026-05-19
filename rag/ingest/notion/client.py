@@ -26,6 +26,7 @@ import requests
 
 from utils.logger import AppLogger
 from rag.knowledge.models import Block, BlockType, Page, Workspace
+from rag.rate_limiter import RateLimiter
 
 log = AppLogger.get(__name__)
 
@@ -156,7 +157,7 @@ class NotionClient:
         token : Notion integration secret (Bearer token).
     """
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: str, requests_per_minute: int = 0) -> None:
         if not token:
             raise ValueError("Notion integration token is required.")
         self._session = requests.Session()
@@ -167,6 +168,7 @@ class NotionClient:
                 "Content-Type": "application/json",
             }
         )
+        self._limiter = RateLimiter(requests_per_minute)
 
     # ------------------------------------------------------------------
     # Connection test
@@ -193,6 +195,7 @@ class NotionClient:
     def _get(self, path: str, params: dict | None = None) -> dict:
         url = f"{_BASE_URL}{path}"
         for attempt in range(1, _MAX_RETRIES + 1):
+            self._limiter.acquire()
             resp = self._session.get(url, params=params or {})
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", "2"))
@@ -206,6 +209,7 @@ class NotionClient:
     def _post(self, path: str, body: dict | None = None) -> dict:
         url = f"{_BASE_URL}{path}"
         for attempt in range(1, _MAX_RETRIES + 1):
+            self._limiter.acquire()
             resp = self._session.post(url, json=body or {})
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", "2"))

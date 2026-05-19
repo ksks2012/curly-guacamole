@@ -44,6 +44,7 @@ from langchain_openai import OpenAIEmbeddings
 
 from utils.config import AppConfig
 from utils.logger import AppLogger
+from rag.embeddings import OpenRouterEmbeddings
 from rag.indexer import Indexer
 from rag.knowledge.models import Page, Workspace
 from rag.knowledge.store import RawStore
@@ -114,13 +115,21 @@ class NotionEmbedder:
         self._client  = client
         self._chunker = chunker or NotionChunker()
 
-        log.info("Building embeddings client → %s", config.embed_base)
+        log.info("Building embeddings client → %s (provider=%s)", config.embed_base, config.model_provider)
         self._embedding_version = config.embed_model
-        self._embeddings = OpenAIEmbeddings(
-            openai_api_key=config.api_key,
-            openai_api_base=config.embed_base,
-            model=config.embed_model,
-        )
+        if config.model_provider == "openrouter":
+            self._embeddings = OpenRouterEmbeddings(
+                model=config.embed_model,
+                api_key=config.embed_api_key,
+                base_url=config.embed_base,
+                requests_per_minute=config.requests_rate_limit,
+            )
+        else:
+            self._embeddings = OpenAIEmbeddings(
+                openai_api_key=config.embed_api_key,
+                openai_api_base=config.embed_base,
+                model=config.embed_model,
+            )
 
         log.info("Opening Chroma store → %s", config.persist_directory)
         self._chroma = Chroma(

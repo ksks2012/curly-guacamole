@@ -83,7 +83,7 @@ class AppConfig:
 
     @property
     def embed_base(self) -> str:
-        return self._data.get("embed_base", "http://localhost:8080/v1/")
+        return self._data.get("embed_base", "http://localhost:8080/v1").rstrip("/")
 
     @property
     def embed_model(self) -> str:
@@ -93,7 +93,7 @@ class AppConfig:
 
     @property
     def llm_base(self) -> str:
-        return self._data.get("llm_base", "http://localhost:8080/v1/")
+        return self._data.get("llm_base", "http://localhost:8080/v1").rstrip("/")
 
     @property
     def llm_model(self) -> str:
@@ -162,11 +162,56 @@ class AppConfig:
         """Number of extra phrasings to generate (total candidates = n+1 including original)."""
         return int(self._data.get("query_expansion_n", 3))
 
+    # --- Provider ---
+
+    @property
+    def model_provider(self) -> str:
+        """Selects which provider adapter to use for embeddings and LLM.
+
+        Supported values:
+            ``"openai"``      — standard ``OpenAIEmbeddings`` + ``ChatOpenAI``
+                                (default; works with local llama.cpp / Ollama too)
+            ``"openrouter"``  — ``OpenRouterEmbeddings`` (direct httpx) + ``ChatOpenAI``
+                                Set ``llm_base`` to ``https://openrouter.ai/api/v1``
+                                and ``llm_api_key`` to your ``sk-or-...`` key.
+        """
+        return self._data.get("model_provider", "openai")
+
+    @property
+    def requests_rate_limit(self) -> int:
+        """Maximum embedding API calls per 60-second rolling window.
+
+        Only used when ``model_provider="openrouter"``.  Set to ``0`` to
+        disable throttling.  OpenRouter free-tier models are typically capped
+        at 20 requests/min.
+        """
+        return int(self._data.get("requests_rate_limit", 20))
+
     # --- Auth ---
 
     @property
     def api_key(self) -> str:
         return self._data.get("api_key", "sk-no-key-required")
+
+    @property
+    def embed_api_key(self) -> str:
+        """API key for the embedding server.
+
+        Falls back to ``api_key`` when not explicitly set.  Useful when the
+        LLM provider (e.g. OpenRouter) requires a different key than the
+        embedding server (e.g. local llama.cpp or real OpenAI embeddings).
+        """
+        return self._data.get("embed_api_key") or self.api_key
+
+    @property
+    def llm_api_key(self) -> str:
+        """API key for the LLM server.
+
+        Falls back to ``api_key`` when not explicitly set.  Set this to your
+        OpenRouter key (``sk-or-...``) while keeping ``embed_api_key`` for the
+        embedding server.
+        """
+        return self._data.get("llm_api_key") or self.api_key
 
     # --- Runtime / testing ---
 

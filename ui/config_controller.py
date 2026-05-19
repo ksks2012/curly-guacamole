@@ -32,12 +32,21 @@ FIELD_SCHEMA: list[dict] = [
     {
         "section": "LLM Server",
         "fields": [
-            ("embed_base",  "Embed Base URL", "url",  "restart", "OpenAI-compatible embedding server endpoint"),
-            ("embed_model", "Embed Model",    "str",  "restart", "Model name for embeddings"),
-            ("llm_base",    "LLM Base URL",   "url",  "restart", "OpenAI-compatible LLM chat endpoint"),
-            ("llm_model",   "LLM Model",      "str",  "restart", "Model name for generation"),
-            ("api_key",     "API Key",        "str",  "restart", "API key (sk-no-key-required for local servers)"),
-            ("llm_kwargs",  "LLM Extra Args", "json", "restart", "Extra kwargs passed to ChatOpenAI (JSON object)"),
+            ("model_provider", "Model Provider",  "select:openai,openrouter", "restart", "Embedding/LLM adapter: 'openai' (local) or 'openrouter'"),
+            ("embed_base",     "Embed Base URL",  "url",  "restart", "OpenAI-compatible embedding server endpoint"),
+            ("embed_model",    "Embed Model",     "str",  "restart", "Model name for embeddings"),
+            ("llm_base",       "LLM Base URL",    "url",  "restart", "OpenAI-compatible LLM chat endpoint"),
+            ("llm_model",      "LLM Model",       "str",  "restart", "Model name for generation"),
+            ("api_key",        "API Key",         "str",  "restart", "Default API key (fallback when embed/llm keys are not set)"),
+            ("embed_api_key",  "Embed API Key",   "str",  "restart", "API key for the embedding server (overrides api_key)"),
+            ("llm_api_key",    "LLM API Key",     "str",  "restart", "API key for the LLM server (overrides api_key)"),
+            ("llm_kwargs",     "LLM Extra Args",  "json", "restart", "Extra kwargs passed to ChatOpenAI (JSON object)"),
+        ],
+    },
+    {
+        "section": "Provider / Rate Limit",
+        "fields": [
+            ("requests_rate_limit", "Requests / Minute", "int", "restart", "Max embedding API calls per 60 s (openrouter only; 0 = unlimited)"),
         ],
     },
     {

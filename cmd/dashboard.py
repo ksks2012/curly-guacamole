@@ -40,10 +40,14 @@ from rag.client import LocalLlamaClient
 from ui.search_controller import SearchController
 from ui.index_controller import IndexController
 from ui.config_controller import ConfigController
+from ui.knowledge_controller import KnowledgeController
 import ui.search_tab as search_tab_ui
 import ui.index_tab as index_tab_ui
 import ui.trace_tab as trace_tab_ui
 import ui.config_tab as config_tab_ui
+import ui.knowledge_tab as knowledge_tab_ui
+import ui.notion_tab as notion_tab_ui
+from ui.notion_controller import NotionController
 
 # ---------------------------------------------------------------------------
 # Bootstrap: config → logging → client → controller
@@ -61,6 +65,8 @@ _client = LocalLlamaClient(_config)
 _ctrl = SearchController(_client)
 _idx_ctrl = IndexController(_client)
 _cfg_ctrl = ConfigController(_config)
+_know_ctrl = KnowledgeController(_client)
+_notion_ctrl = NotionController(_config)
 log.info("RAG client ready")
 
 
@@ -83,6 +89,8 @@ def dashboard():
             search_tab = ui.tab("Search").props("no-caps")
             trace_tab  = ui.tab("Trace").props("no-caps")
             index_tab  = ui.tab("Index").props("no-caps")
+            know_tab   = ui.tab("Knowledge").props("no-caps")
+            notion_tab = ui.tab("Notion").props("no-caps")
             config_tab = ui.tab("Config").props("no-caps")
 
         # Shared callback list — trace tab appends its refresh here
@@ -95,7 +103,8 @@ def dashboard():
             with ui.tab_panel(search_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
             ):
-                fi_source = search_tab_ui.build(_ctrl, on_search=_on_search)
+                search_result = search_tab_ui.build(_ctrl, on_search=_on_search)
+                fi_source = search_result.fi_source
 
             with ui.tab_panel(trace_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
@@ -117,6 +126,20 @@ def dashboard():
                 "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
             ):
                 config_tab_ui.build(_cfg_ctrl)
+
+            with ui.tab_panel(know_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                def _ask_from_knowledge(question: str) -> None:
+                    search_result.query_input.set_value(question)
+                    tabs.set_value(search_tab)
+
+                knowledge_tab_ui.build(_know_ctrl, on_ask=_ask_from_knowledge)
+
+            with ui.tab_panel(notion_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
+            ):
+                notion_tab_ui.build(_notion_ctrl)
 
 
 # ---------------------------------------------------------------------------
