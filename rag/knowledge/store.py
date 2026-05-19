@@ -273,6 +273,15 @@ class RawStore:
             row = conn.execute(stmt).first()
         return row[0] if row else None
 
+    def get_page_updated_time(self, page_id: str) -> datetime | None:
+        """Return the stored updated_time for *page_id*, or None if not stored."""
+        stmt = select(_pages.c.updated_time).where(_pages.c.id == page_id)
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt).first()
+        if not row or not row[0]:
+            return None
+        return datetime.fromisoformat(row[0])
+
     def list_pages(self, workspace_id: str | None = None) -> list[Page]:
         stmt = select(_pages).order_by(_pages.c.title)
         if workspace_id:

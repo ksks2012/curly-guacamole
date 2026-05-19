@@ -186,6 +186,14 @@ class NotionSyncPipeline:
             workspace_name=self._workspace.name,
         )
 
+        # Early skip: if Notion reports the same last_edited_time as what we
+        # already stored, the page content cannot have changed — no need to
+        # fetch the markdown at all.
+        stored_updated_time = self._store.get_page_updated_time(page.id)
+        if stored_updated_time is not None and stored_updated_time >= page.updated_time:
+            log.debug("  skip (last_edited_time unchanged): %r", page.title)
+            return False
+
         # Fetch page content as Markdown
         markdown = self._client.get_page_markdown(notion_page_id)
 
