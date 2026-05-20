@@ -122,11 +122,6 @@ def dashboard():
                     ),
                 )
 
-            with ui.tab_panel(config_tab).classes("p-0").style(
-                "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
-            ):
-                config_tab_ui.build(_cfg_ctrl)
-
             with ui.tab_panel(know_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
             ):
@@ -140,6 +135,11 @@ def dashboard():
                 "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
             ):
                 notion_tab_ui.build(_notion_ctrl)
+
+            with ui.tab_panel(config_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: row; overflow: hidden;"
+            ):
+                config_tab_ui.build(_cfg_ctrl)
 
 
 # ---------------------------------------------------------------------------
