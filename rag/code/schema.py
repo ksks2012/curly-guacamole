@@ -304,6 +304,110 @@ class CodeChunk:
 
 
 # ---------------------------------------------------------------------------
+# CommitInfo  (GCR1.5 — Git-aware Snapshot System)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CommitInfo:
+    """Lightweight record of one git commit.
+
+    Attributes
+    ----------
+    commit_hash    : Full 40-char SHA-1 hex digest.
+    author         : Author name (from git log ``%an``).
+    date           : ISO-8601 UTC commit timestamp.
+    message        : Full commit message.
+    files_changed  : POSIX-relative paths of files touched by this commit.
+    """
+
+    commit_hash:   str
+    author:        str
+    date:          str    # ISO-8601 UTC
+    message:       str
+    files_changed: list[str] = field(default_factory=list)
+
+    @property
+    def short_hash(self) -> str:
+        return self.commit_hash[:12]
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CommitInfo":
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
+# FileSnapshot  (GCR1.5 — Git-aware Snapshot System)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FileSnapshot:
+    """State of one file at a specific git commit — the unit of temporal knowledge.
+
+    A FileSnapshot captures what a file *was* at a point in time, together
+    with the symbols visible at that moment.  A series of FileSnapshots for
+    the same ``file_path`` forms a timeline that lets the system reason about:
+
+    - which symbols were added / removed between commits
+    - which files change most frequently (instability signal)
+    - how a module's public API evolved
+
+    Attributes
+    ----------
+    snapshot_id  : Deterministic ID: ``"{repo_id}::{commit_hash[:12]}::{file_path}"``.
+    repo_id      : Logical repository identifier.
+    commit_hash  : Full 40-char SHA-1 git commit hash.
+    file_path    : POSIX path relative to the repository root.
+    content_hash : SHA-256 hex digest of the file content at this commit.
+    symbols      : Fully-qualified symbol names extracted from this version
+                   of the file (e.g. ``["MyClass", "MyClass.my_method"]``).
+                   Stored as ``list[str]`` in memory; serialised to CSV in
+                   ``to_meta()`` to remain Chroma-compatible.
+    """
+
+    snapshot_id:  str
+    repo_id:      str
+    commit_hash:  str
+    file_path:    str
+    content_hash: str
+    symbols:      list[str] = field(default_factory=list)
+
+    @property
+    def short_hash(self) -> str:
+        return self.commit_hash[:12]
+
+    # ── Serialisation ─────────────────────────────────────────────────────
+
+    def to_meta(self) -> dict:
+        """Return a flat dict of Chroma-safe scalar values.
+
+        ``symbols`` is serialised as a comma-separated string so Chroma can
+        store it as a scalar metadata field.
+        """
+        return {
+            "snapshot_id":  self.snapshot_id,
+            "repo_id":      self.repo_id,
+            "commit_hash":  self.commit_hash,
+            "file_path":    self.file_path,
+            "content_hash": self.content_hash,
+            "symbols":      ",".join(self.symbols),
+        }
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FileSnapshot":
+        d = dict(d)
+        if isinstance(d.get("symbols"), str):
+            # Backwards-compat: CSV → list
+            d["symbols"] = [s for s in d["symbols"].split(",") if s]
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
