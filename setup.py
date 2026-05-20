@@ -17,6 +17,7 @@ setup(
         "pypdf",
         "pyyaml",
         "httpx",
+        "libcst",
     ],
     include_package_data=True,
     package_data={
