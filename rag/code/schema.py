@@ -185,6 +185,71 @@ class ManifestDiff:
 
 
 # ---------------------------------------------------------------------------
+# CodeChunk  (GCR1.2 — AST-aware Parsing)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CodeChunk:
+    """A syntax-aware chunk extracted from a source file by AST parsing.
+
+    Each chunk corresponds to a meaningful code boundary:
+    module / class / function / method.
+
+    Attributes
+    ----------
+    chunk_id     : Deterministic ID: ``"{repo_id}::{file_path}::{chunk_type}::{name}"``.
+    repo_id      : Logical repository identifier.
+    file_path    : Relative POSIX path from the repo root.
+    language     : Programming language (e.g. "python").
+    chunk_type   : One of ``"module"``, ``"class"``, ``"function"``, ``"method"``.
+    name         : Fully-qualified symbol name (e.g. ``"MyClass.my_method"``).
+    start_line   : 1-based first line of the chunk in the source file.
+    end_line     : 1-based last line of the chunk in the source file.
+    code         : Raw source text of the chunk (may be indented).
+    docstring    : Extracted docstring, or ``None`` if absent.
+    parent_name  : Name of the enclosing class or function, or ``None``.
+    content_hash : SHA-256 hex digest of *code* for incremental indexing.
+    """
+
+    chunk_id:     str
+    repo_id:      str
+    file_path:    str
+    language:     str
+    chunk_type:   str    # "module" | "class" | "function" | "method"
+    name:         str
+    start_line:   int
+    end_line:     int
+    code:         str
+    docstring:    str | None
+    parent_name:  str | None
+    content_hash: str
+
+    # ── Serialisation ─────────────────────────────────────────────────────
+
+    def to_meta(self) -> dict:
+        """Return a flat dict of Chroma-safe scalar values (no None)."""
+        return {
+            "chunk_id":     self.chunk_id,
+            "repo_id":      self.repo_id,
+            "file_path":    self.file_path,
+            "language":     self.language,
+            "chunk_type":   self.chunk_type,
+            "name":         self.name,
+            "start_line":   self.start_line,
+            "end_line":     self.end_line,
+            "parent_name":  self.parent_name or "",
+            "content_hash": self.content_hash,
+        }
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CodeChunk":
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
