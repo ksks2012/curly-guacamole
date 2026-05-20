@@ -185,6 +185,60 @@ class ManifestDiff:
 
 
 # ---------------------------------------------------------------------------
+# Symbol  (GCR1.3 — Symbol Registry)
+# ---------------------------------------------------------------------------
+
+#: All valid symbol type strings.
+SYMBOL_TYPES = frozenset({
+    "class", "function", "method",
+    "interface", "struct", "enum",
+    "module", "namespace",
+})
+
+
+@dataclass
+class Symbol:
+    """A named code symbol extracted from a source file.
+
+    Each Symbol corresponds to a meaningful declaration boundary and is
+    stored independently of the raw code chunks so that the Symbol Registry
+    can serve as a fast, queryable index over the codebase.
+
+    Attributes
+    ----------
+    symbol_id     : Deterministic ID: ``"{repo_id}::{file_path}::{symbol_type}::{symbol_name}"``.
+    symbol_name   : Fully-qualified symbol name (e.g. ``"MyClass.my_method"``).
+    symbol_type   : One of the values in ``SYMBOL_TYPES``.
+    repo_id       : Logical repository identifier.
+    file_path     : Relative POSIX path from the repository root.
+    start_line    : 1-based first line of the symbol declaration.
+    end_line      : 1-based last line of the symbol declaration.
+    parent_symbol : symbol_id of the enclosing symbol, or ``""`` if top-level.
+    visibility    : ``"public"`` / ``"private"`` / ``"dunder"`` (Python convention).
+                    ``"public"`` for non-Python languages when not determinable.
+    """
+
+    symbol_id:     str
+    symbol_name:   str
+    symbol_type:   str    # value must be in SYMBOL_TYPES
+    repo_id:       str
+    file_path:     str
+    start_line:    int
+    end_line:      int
+    parent_symbol: str    # symbol_id of parent, or ""
+    visibility:    str    # "public" | "private" | "dunder"
+
+    # ── Serialisation ─────────────────────────────────────────────────────
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Symbol":
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
 # CodeChunk  (GCR1.2 — AST-aware Parsing)
 # ---------------------------------------------------------------------------
 
