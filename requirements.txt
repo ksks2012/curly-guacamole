@@ -16,3 +16,4 @@ httpx
 scikit-learn
 numpy
 libcst
+pathspec

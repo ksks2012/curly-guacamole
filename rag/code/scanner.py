@@ -35,6 +35,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Collection
 
+try:
+    import pathspec as _pathspec
+    _HAS_PATHSPEC = True
+except ImportError:  # pragma: no cover
+    _pathspec = None  # type: ignore[assignment]
+    _HAS_PATHSPEC = False
+
 from utils.logger import AppLogger
 from rag.code.schema import ManifestDiff, RepoFile, RepoManifest
 
@@ -204,6 +211,60 @@ def _mtime_iso(path: Path) -> str:
         return ""
 
 
+def _load_gitignore_specs(repo_root: Path) -> list:
+    """Return a list of (base_path, PathSpec) pairs for every .gitignore found
+    inside *repo_root* (including the root-level one).
+
+    Each PathSpec is evaluated relative to the directory that contains the
+    .gitignore file, which matches how git itself resolves patterns.
+
+    Returns an empty list when pathspec is not installed or no .gitignore
+    files exist.
+    """
+    if not _HAS_PATHSPEC:
+        log.debug("pathspec not installed — .gitignore patterns will not be applied")
+        return []
+
+    specs: list[tuple[Path, object]] = []
+    for gitignore in sorted(repo_root.rglob(".gitignore")):
+        # Never descend into .git itself
+        try:
+            gitignore.relative_to(repo_root / ".git")
+            continue
+        except ValueError:
+            pass
+        try:
+            lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
+            spec = _pathspec.PathSpec.from_lines("gitwildmatch", lines)
+            specs.append((gitignore.parent, spec))
+        except OSError:
+            pass
+
+    log.debug("_load_gitignore_specs: loaded %d .gitignore file(s)", len(specs))
+    return specs
+
+
+def _is_gitignored(path: Path, is_dir: bool, specs: list) -> bool:
+    """Return True if *path* is matched by any of the loaded .gitignore specs.
+
+    Each spec is applied relative to the directory that owns it, so nested
+    .gitignore files only affect paths beneath them.
+    """
+    for base, spec in specs:
+        try:
+            rel = path.relative_to(base).as_posix()
+        except ValueError:
+            continue  # path is not under this spec's base directory
+        # For directories append '/' so patterns like 'build/' match correctly
+        if is_dir:
+            if spec.match_file(rel + "/") or spec.match_file(rel):
+                return True
+        else:
+            if spec.match_file(rel):
+                return True
+    return False
+
+
 def _git_branch(repo_root: Path) -> str:
     """Return the current git branch name, or '' if not a git repo / git absent."""
     try:
@@ -242,6 +303,7 @@ class RepoScanner:
         excluded_dirs:    Collection[str] | None = None,
         extra_extensions: dict[str, str] | None  = None,
         max_file_size:    int = 10 * 1024 * 1024,
+        use_gitignore:    bool = True,
     ) -> None:
         self._excluded = _EXCLUDED_DIRS | set(excluded_dirs or [])
         self._ext_lang: dict[str, str] = {
@@ -249,6 +311,7 @@ class RepoScanner:
             **(extra_extensions or {}),
         }
         self._max_file_size = max_file_size
+        self._use_gitignore = use_gitignore
 
     # ------------------------------------------------------------------
     # Public API
@@ -274,17 +337,30 @@ class RepoScanner:
         total   = 0
         skipped = 0
 
+        gitignore_specs = _load_gitignore_specs(root) if self._use_gitignore else []
+
         for dirpath, dirnames, filenames in os.walk(root):
-            # Prune excluded directories in-place so os.walk does not descend
+            cur_dir = Path(dirpath)
+            # Prune excluded directories in-place so os.walk does not descend.
+            # Both the hardcoded set and any .gitignore patterns are applied.
             dirnames[:] = [
                 d for d in dirnames
-                if d not in self._excluded and not d.endswith(".egg-info")
+                if (
+                    d not in self._excluded
+                    and not d.endswith(".egg-info")
+                    and not _is_gitignored(cur_dir / d, is_dir=True, specs=gitignore_specs)
+                )
             ]
 
             for filename in filenames:
                 abs_path  = Path(dirpath) / filename
                 rel_posix = abs_path.relative_to(root).as_posix()
                 total    += 1
+
+                # Skip files matched by .gitignore
+                if gitignore_specs and _is_gitignored(abs_path, is_dir=False, specs=gitignore_specs):
+                    skipped += 1
+                    continue
 
                 try:
                     stat = abs_path.stat()
