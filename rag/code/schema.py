@@ -1,0 +1,192 @@
+"""
+GCR1 — Repository Intelligence Foundation: domain schema.
+
+RepoFile       — metadata for a single file inside a repository.
+RepoManifest   — snapshot of an entire repository scan.
+ManifestDiff   — change set between two consecutive manifests.
+
+Design notes
+------------
+- All fields are Chroma-safe scalars (str / int / float / bool) so
+  RepoFile.to_meta() can be attached directly to a Chroma Document.
+- content_hash (SHA-256) + mtime together enable fast incremental indexing:
+    • hash changed   → content was modified, must re-embed
+    • mtime changed but hash same → metadata-only edit (e.g. chmod), skip
+    • absent from new manifest → file was deleted
+- is_test / is_generated are heuristic flags derived from path patterns;
+  callers may override them after construction.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterator
+
+
+# ---------------------------------------------------------------------------
+# RepoFile
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RepoFile:
+    """Metadata for one file in a repository.
+
+    Attributes
+    ----------
+    repo_id       : Logical identifier for the repository (e.g. "my-project").
+    branch        : Git branch name at scan time ("" if not a git repo).
+    file_path     : POSIX path relative to the repository root.
+    language      : Programming language inferred from file extension.
+                    "" when the extension is unknown / not a source file.
+    size          : File size in bytes.
+    is_test       : True when the file is likely a test file (heuristic).
+    is_generated  : True when the file is machine-generated (heuristic).
+    content_hash  : SHA-256 hex digest of the file content.
+    mtime         : ISO-8601 UTC last-modified timestamp.
+    """
+
+    repo_id:       str
+    branch:        str
+    file_path:     str    # relative POSIX path from repo root
+    language:      str
+    size:          int
+    is_test:       bool
+    is_generated:  bool
+    content_hash:  str
+    mtime:         str
+
+    # ── Serialisation ─────────────────────────────────────────────────────
+
+    def to_meta(self) -> dict:
+        """Return a flat dict of Chroma-safe scalar values."""
+        return {
+            "repo_id":      self.repo_id,
+            "branch":       self.branch,
+            "file_path":    self.file_path,
+            "language":     self.language,
+            "size":         self.size,
+            "is_test":      self.is_test,
+            "is_generated": self.is_generated,
+            "content_hash": self.content_hash,
+            "mtime":        self.mtime,
+        }
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RepoFile":
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
+# RepoManifest
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RepoManifest:
+    """Snapshot of a full repository scan.
+
+    Attributes
+    ----------
+    repo_id    : Logical identifier for the repository.
+    repo_root  : Absolute path to the repository root on disk.
+    branch     : Git branch name at scan time.
+    scanned_at : ISO-8601 UTC timestamp of when the scan was performed.
+    files      : Mapping of relative POSIX path → RepoFile.
+    """
+
+    repo_id:    str
+    repo_root:  str
+    branch:     str
+    scanned_at: str = field(default_factory=lambda: _now_iso())
+    files:      dict[str, RepoFile] = field(default_factory=dict)
+
+    # ── Convenience accessors ──────────────────────────────────────────────
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __iter__(self) -> Iterator[RepoFile]:
+        return iter(self.files.values())
+
+    def by_language(self, language: str) -> list[RepoFile]:
+        """All files written in *language* (case-insensitive)."""
+        lang = language.lower()
+        return [f for f in self if f.language.lower() == lang]
+
+    def source_files(self) -> list[RepoFile]:
+        """Non-test, non-generated files that have a known language."""
+        return [
+            f for f in self
+            if f.language and not f.is_test and not f.is_generated
+        ]
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def save(self, path: str | Path) -> None:
+        """Serialise to a JSON file at *path*."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "repo_id":    self.repo_id,
+            "repo_root":  self.repo_root,
+            "branch":     self.branch,
+            "scanned_at": self.scanned_at,
+            "files":      {k: v.to_dict() for k, v in self.files.items()},
+        }
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: str | Path) -> "RepoManifest":
+        """Deserialise a manifest previously saved by :meth:`save`."""
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        files = {k: RepoFile.from_dict(v) for k, v in data.get("files", {}).items()}
+        return cls(
+            repo_id=data["repo_id"],
+            repo_root=data["repo_root"],
+            branch=data.get("branch", ""),
+            scanned_at=data.get("scanned_at", ""),
+            files=files,
+        )
+
+
+# ---------------------------------------------------------------------------
+# ManifestDiff
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ManifestDiff:
+    """Change set between two consecutive RepoManifest snapshots.
+
+    Attributes
+    ----------
+    added    : Files present in *new* but absent in *old*.
+    modified : Files present in both whose content_hash changed.
+    deleted  : Files present in *old* but absent in *new*.
+    """
+
+    added:    list[RepoFile] = field(default_factory=list)
+    modified: list[RepoFile] = field(default_factory=list)
+    deleted:  list[RepoFile] = field(default_factory=list)
+
+    def is_empty(self) -> bool:
+        return not (self.added or self.modified or self.deleted)
+
+    def summary(self) -> str:
+        return (
+            f"+{len(self.added)} added  "
+            f"~{len(self.modified)} modified  "
+            f"-{len(self.deleted)} deleted"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
