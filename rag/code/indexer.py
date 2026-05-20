@@ -1,0 +1,519 @@
+"""
+GCR1.4 — Multi-resolution Code Indexing.
+
+Four Chroma collections at increasing granularity:
+
+  repo   collection — one document per repository (architecture overview).
+  file   collection — one document per source file (module-level summary).
+  symbol collection — one document per symbol (class / function / method).
+                      Primary retrieval collection.
+  block  collection — one document per code chunk (full code text).
+                      Fine-grained reasoning collection.
+
+Collection naming
+-----------------
+Each collection name is ``{collection_prefix}_{level}``.  The default prefix
+is ``"code"``, giving ``code_repo``, ``code_file``, ``code_symbol``,
+``code_block``.  Override *collection_prefix* when indexing multiple
+repositories into the same Chroma store.
+
+Incremental indexing
+---------------------
+Every document stores ``content_hash`` in its metadata.  On each indexing
+run the store compares incoming hashes against stored hashes:
+
+  - hash unchanged → skipped (no embedding re-generated)
+  - hash changed   → updated via ``update_documents``
+  - new ID         → added via ``add_documents``
+  - ID absent from new scan but present in store → pruned (per-repo scoped)
+
+Pruning is scoped to the current ``repo_id`` so that documents from other
+repositories in the same collection are never affected.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Iterable
+
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+
+from utils.logger import AppLogger
+from rag.code.schema import CodeChunk, RepoManifest, Symbol
+from rag.code.symbol_store import SymbolStore
+
+log = AppLogger.get(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Text builders — what gets embedded at each resolution level
+# ---------------------------------------------------------------------------
+
+def _repo_text(manifest: RepoManifest, module_docs: dict[str, str]) -> str:
+    """Architecture overview for a repository.
+
+    Combines repo/branch metadata, language breakdown, and per-file module
+    docstrings so the repo doc answers "what does this repository do?" queries.
+    """
+    source = manifest.source_files()
+    lang_counts: dict[str, int] = {}
+    for f in source:
+        lang_counts[f.language] = lang_counts.get(f.language, 0) + 1
+    lang_line = "  ".join(
+        f"{lang}={cnt}"
+        for lang, cnt in sorted(lang_counts.items(), key=lambda x: -x[1])
+    )
+    lines = [
+        f"repository: {manifest.repo_id}  branch: {manifest.branch}",
+        f"files: {len(manifest.files)}  source_files: {len(source)}",
+        f"languages: {lang_line}",
+        "",
+    ]
+    for f in sorted(source, key=lambda x: x.file_path):
+        doc = module_docs.get(f.file_path, "")
+        first = doc.split("\n")[0].strip() if doc else ""
+        lines.append(f"  {f.file_path}" + (f"  —  {first}" if first else ""))
+    return "\n".join(lines)
+
+
+def _file_text(
+    file_path: str,
+    language: str,
+    module_docstring: str | None,
+    symbol_lines: list[str],
+) -> str:
+    """Per-file summary combining module docstring and declared symbols.
+
+    Useful for answering "which file handles X?" queries.
+    """
+    parts: list[str] = [f"file: {file_path}  language: {language}"]
+    if module_docstring:
+        parts.append(module_docstring.strip())
+    if symbol_lines:
+        parts.append("\n".join(symbol_lines))
+    return "\n".join(parts)
+
+
+def _symbol_text(sym: Symbol, docstring: str | None) -> str:
+    """Conceptual description of a symbol: type + qualified name + docstring.
+
+    Embedded text for the primary retrieval collection.  Intentionally
+    omits implementation details so the embedding captures the *meaning*
+    of the symbol, not its syntax.
+    """
+    lines = [
+        f"{sym.symbol_type} {sym.symbol_name}",
+        f"file: {sym.file_path}  lines {sym.start_line}–{sym.end_line}",
+    ]
+    if docstring:
+        lines.append(docstring.strip())
+    return "\n".join(lines)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# CodeIndexer
+# ---------------------------------------------------------------------------
+
+class CodeIndexer:
+    """Multi-resolution code indexer (GCR1.4).
+
+    Manages four Chroma collections at different granularities.  All
+    collections live in the same *persist_directory* but use distinct
+    collection names derived from *collection_prefix*.
+
+    Parameters
+    ----------
+    persist_directory  : Chroma storage directory path.
+    embedding_function : Any LangChain ``Embeddings`` instance.
+    collection_prefix  : Prefix shared by all four collection names.
+                         Default ``"code"`` → ``code_repo``, ``code_file``,
+                         ``code_symbol``, ``code_block``.
+    """
+
+    LEVELS = ("repo", "file", "symbol", "block")
+
+    def __init__(
+        self,
+        persist_directory: str,
+        embedding_function,
+        collection_prefix: str = "code",
+    ) -> None:
+        self._persist_dir = persist_directory
+        self._embed = embedding_function
+        self._prefix = collection_prefix
+        self._dbs: dict[str, Chroma] = {}
+
+    # ── Collection access ─────────────────────────────────────────────────
+
+    def collection_name(self, level: str) -> str:
+        """Return the Chroma collection name for *level*."""
+        return f"{self._prefix}_{level}"
+
+    def _db(self, level: str) -> Chroma:
+        if level not in self._dbs:
+            self._dbs[level] = Chroma(
+                persist_directory=self._persist_dir,
+                embedding_function=self._embed,
+                collection_name=self.collection_name(level),
+            )
+        return self._dbs[level]
+
+    # ── Incremental upsert ────────────────────────────────────────────────
+
+    def _upsert(
+        self,
+        level: str,
+        docs: list[Document],
+        ids: list[str],
+        *,
+        prune_missing: bool = True,
+        repo_id: str = "",
+    ) -> dict:
+        """Incrementally upsert documents into a collection.
+
+        Compares incoming ``content_hash`` values against stored metadata.
+        Only changed or new documents trigger embedding generation.
+        Pruning removes documents belonging to the same ``repo_id`` that are
+        absent from the incoming set, keeping cross-repo documents intact.
+
+        Returns
+        -------
+        dict with keys: added, updated, skipped, deleted.
+        """
+        stats = {"added": 0, "updated": 0, "skipped": 0, "deleted": 0}
+        if not docs:
+            return stats
+
+        db = self._db(level)
+
+        # Fetch existing IDs and content_hash metadata (no embeddings — cheap).
+        try:
+            if repo_id:
+                existing_raw = db.get(
+                    where={"repo_id": repo_id},
+                    include=["metadatas"],
+                )
+            else:
+                existing_raw = db.get(include=["metadatas"])
+        except Exception:
+            existing_raw = {"ids": [], "metadatas": []}
+
+        existing: dict[str, str] = {}  # id → stored content_hash
+        for eid, emeta in zip(
+            existing_raw.get("ids", []),
+            existing_raw.get("metadatas", []) or [],
+        ):
+            existing[eid] = (emeta or {}).get("content_hash", "")
+
+        to_add: list[tuple[str, Document]] = []
+        to_update: list[tuple[str, Document]] = []
+
+        for doc_id, doc in zip(ids, docs):
+            new_hash = doc.metadata.get("content_hash", "")
+            if doc_id not in existing:
+                to_add.append((doc_id, doc))
+            elif existing[doc_id] != new_hash:
+                to_update.append((doc_id, doc))
+            else:
+                stats["skipped"] += 1
+
+        if to_add:
+            add_ids, add_docs = zip(*to_add)
+            db.add_documents(list(add_docs), ids=list(add_ids))
+            stats["added"] += len(to_add)
+            log.debug("CodeIndexer[%s] +%d added", level, len(to_add))
+
+        if to_update:
+            upd_ids, upd_docs = zip(*to_update)
+            db.update_documents(list(upd_ids), list(upd_docs))
+            stats["updated"] += len(to_update)
+            log.debug("CodeIndexer[%s] ~%d updated", level, len(to_update))
+
+        if prune_missing:
+            new_id_set = set(ids)
+            stale = [eid for eid in existing if eid not in new_id_set]
+            if stale:
+                db.delete(stale)
+                stats["deleted"] += len(stale)
+                log.debug("CodeIndexer[%s] -%d deleted", level, len(stale))
+
+        return stats
+
+    # ── Level: repo ───────────────────────────────────────────────────────
+
+    def index_manifest(
+        self,
+        manifest: RepoManifest,
+        chunks: list[CodeChunk] | None = None,
+    ) -> dict:
+        """Index a single repo-level document summarising the repository.
+
+        The embedded text covers branch, language breakdown, and a per-file
+        list with module docstrings — suitable for high-level architecture
+        queries like "what does this repo do?" or "where is the auth layer?".
+
+        Parameters
+        ----------
+        manifest : RepoManifest from RepoScanner.
+        chunks   : Optional CodeChunk list; used to extract module docstrings.
+        """
+        module_docs: dict[str, str] = {}
+        if chunks:
+            for c in chunks:
+                if c.chunk_type == "module" and c.docstring:
+                    module_docs[c.file_path] = c.docstring
+
+        text = _repo_text(manifest, module_docs)
+
+        # content_hash = hash of all file hashes → changes when any file changes
+        all_hashes = "".join(
+            f.content_hash
+            for f in sorted(manifest.files.values(), key=lambda x: x.file_path)
+        )
+        repo_hash = _sha256(all_hashes)
+
+        doc = Document(
+            page_content=text,
+            metadata={
+                "repo_id":      manifest.repo_id,
+                "branch":       manifest.branch,
+                "scanned_at":   manifest.scanned_at,
+                "file_count":   len(manifest.files),
+                "source_count": len(manifest.source_files()),
+                "content_hash": repo_hash,
+            },
+        )
+        doc_id = f"{manifest.repo_id}::repo"
+        # Never prune the repo collection: each repo_id is independent.
+        return self._upsert("repo", [doc], [doc_id], prune_missing=False)
+
+    # ── Level: file ───────────────────────────────────────────────────────
+
+    def index_files(
+        self,
+        chunks: list[CodeChunk],
+        manifest: RepoManifest | None = None,
+    ) -> dict:
+        """Index one document per source file.
+
+        The embedded text combines the module docstring with a structured
+        listing of all symbols declared in the file.  Suitable for queries
+        like "which file implements the retry logic?".
+
+        Parameters
+        ----------
+        chunks   : All CodeChunk objects for the repository.
+        manifest : Optional RepoManifest used to enrich metadata
+                   (language, is_test, is_generated).
+        """
+        by_file: dict[str, list[CodeChunk]] = {}
+        for c in chunks:
+            by_file.setdefault(c.file_path, []).append(c)
+
+        docs: list[Document] = []
+        ids:  list[str]      = []
+        repo_id = ""
+
+        for file_path, file_chunks in by_file.items():
+            module_chunk = next((c for c in file_chunks if c.chunk_type == "module"), None)
+            if module_chunk is None:
+                continue
+            repo_id = repo_id or module_chunk.repo_id
+
+            # One line per declared symbol
+            sym_lines: list[str] = []
+            for c in sorted(file_chunks, key=lambda x: x.start_line):
+                if c.chunk_type == "module":
+                    continue
+                label = f"  {c.chunk_type} {c.name}"
+                if c.docstring:
+                    label += f":  {c.docstring.split(chr(10))[0].strip()}"
+                sym_lines.append(label)
+
+            language = ""
+            is_test = False
+            is_generated = False
+            if manifest and file_path in manifest.files:
+                rf = manifest.files[file_path]
+                language = rf.language
+                is_test = rf.is_test
+                is_generated = rf.is_generated
+
+            text = _file_text(file_path, language, module_chunk.docstring, sym_lines)
+            doc = Document(
+                page_content=text,
+                metadata={
+                    "repo_id":      module_chunk.repo_id,
+                    "file_path":    file_path,
+                    "language":     language,
+                    "is_test":      is_test,
+                    "is_generated": is_generated,
+                    "content_hash": module_chunk.content_hash,
+                },
+            )
+            docs.append(doc)
+            ids.append(f"{module_chunk.repo_id}::{file_path}::file")
+
+        return self._upsert("file", docs, ids, repo_id=repo_id)
+
+    # ── Level: symbol ─────────────────────────────────────────────────────
+
+    def index_symbols(
+        self,
+        symbols: Iterable[Symbol],
+        chunks: list[CodeChunk] | None = None,
+    ) -> dict:
+        """Index one document per symbol — the primary retrieval collection.
+
+        Embedded text = symbol type + qualified name + docstring.
+        Module-level symbols are skipped (covered by the file collection).
+
+        Parameters
+        ----------
+        symbols : Iterable of Symbol objects (from SymbolStore).
+        chunks  : Optional CodeChunk list used to enrich docs with docstrings.
+        """
+        # Docstring lookup: (file_path, symbol_name) → docstring
+        chunk_docstrings: dict[tuple[str, str], str | None] = {}
+        if chunks:
+            for c in chunks:
+                chunk_docstrings[(c.file_path, c.name)] = c.docstring
+
+        docs: list[Document] = []
+        ids:  list[str]      = []
+        repo_id = ""
+
+        for sym in symbols:
+            if sym.symbol_type == "module":
+                continue  # covered by file collection
+            repo_id = repo_id or sym.repo_id
+            docstring = chunk_docstrings.get((sym.file_path, sym.symbol_name))
+            text = _symbol_text(sym, docstring)
+            doc = Document(
+                page_content=text,
+                metadata={
+                    **sym.to_dict(),
+                    "content_hash": _sha256(text),
+                },
+            )
+            docs.append(doc)
+            ids.append(sym.symbol_id)
+
+        return self._upsert("symbol", docs, ids, repo_id=repo_id)
+
+    # ── Level: block ──────────────────────────────────────────────────────
+
+    def index_blocks(self, chunks: list[CodeChunk]) -> dict:
+        """Index one document per code chunk (full source text).
+
+        The block collection stores complete code for fine-grained retrieval:
+        fetching the exact implementation of a function or method body.
+
+        Parameters
+        ----------
+        chunks : All CodeChunk objects (including module / class / function /
+                 method chunks) for the repository.
+        """
+        docs: list[Document] = []
+        ids:  list[str]      = []
+        repo_id = chunks[0].repo_id if chunks else ""
+
+        for chunk in chunks:
+            doc = Document(
+                page_content=chunk.code,
+                metadata=chunk.to_meta(),
+            )
+            docs.append(doc)
+            ids.append(chunk.chunk_id)
+
+        return self._upsert("block", docs, ids, repo_id=repo_id)
+
+    # ── Convenience: all 4 levels ─────────────────────────────────────────
+
+    def index_all(
+        self,
+        manifest: RepoManifest,
+        chunks: list[CodeChunk],
+        store: SymbolStore | None = None,
+    ) -> dict[str, dict]:
+        """Index all four collections in a single call.
+
+        Parameters
+        ----------
+        manifest : RepoManifest produced by RepoScanner.
+        chunks   : All CodeChunk objects from PythonASTParser.
+        store    : Optional pre-built SymbolStore.  Built from *chunks* if None.
+
+        Returns
+        -------
+        dict mapping level name → per-level stats dict
+        (keys: added, updated, skipped, deleted).
+        """
+        if store is None:
+            store = SymbolStore.from_chunks(chunks)
+
+        return {
+            "repo":   self.index_manifest(manifest, chunks),
+            "file":   self.index_files(chunks, manifest),
+            "symbol": self.index_symbols(store, chunks),
+            "block":  self.index_blocks(chunks),
+        }
+
+    # ── Deletion ──────────────────────────────────────────────────────────
+
+    def delete_repo(self, repo_id: str) -> None:
+        """Remove all documents for *repo_id* from every collection."""
+        for level in self.LEVELS:
+            try:
+                db = self._db(level)
+                result = db.get(where={"repo_id": repo_id}, include=[])
+                ids = result.get("ids", [])
+                if ids:
+                    db.delete(ids)
+                    log.info(
+                        "CodeIndexer.delete_repo: removed %d docs from [%s]",
+                        len(ids), level,
+                    )
+            except Exception as e:
+                log.warning("CodeIndexer.delete_repo[%s]: %s", level, e)
+
+    # ── Query helpers ─────────────────────────────────────────────────────
+
+    def search(
+        self,
+        query: str,
+        level: str = "symbol",
+        k: int = 5,
+        filter: dict | None = None,
+    ) -> list[Document]:
+        """Similarity search against one collection.
+
+        Parameters
+        ----------
+        query  : Natural language query string.
+        level  : Collection to search: ``"repo"``, ``"file"``,
+                 ``"symbol"`` (default), or ``"block"``.
+        k      : Number of results to return.
+        filter : Optional Chroma metadata filter dict.
+        """
+        db = self._db(level)
+        kwargs: dict = {"k": k}
+        if filter:
+            kwargs["filter"] = filter
+        return db.similarity_search(query, **kwargs)
+
+    def collection_stats(self) -> dict[str, int]:
+        """Return document count for each of the four collections."""
+        stats: dict[str, int] = {}
+        for level in self.LEVELS:
+            try:
+                result = self._db(level).get(include=[])
+                stats[level] = len(result.get("ids", []))
+            except Exception:
+                stats[level] = 0
+        return stats
