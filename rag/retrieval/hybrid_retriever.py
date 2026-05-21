@@ -36,6 +36,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from rag.retrieval.base import BaseRetriever, RetrievalResult
+from rag.retrieval.pipeline.steps import RRFStep
+from rag.retrieval.pipeline.context import PipelineContext
 from utils.logger import AppLogger
 
 if TYPE_CHECKING:
@@ -45,7 +47,7 @@ log = AppLogger.get(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Internal: RRF merge
+# Internal: RRF merge (thin wrapper around RRFStep for backward compat)
 # ---------------------------------------------------------------------------
 
 def _rrf_merge(
@@ -54,42 +56,10 @@ def _rrf_merge(
     top_k: int,
     rrf_k: int = 60,
 ) -> list[RetrievalResult]:
-    """Fuse multiple result lists into one using Reciprocal Rank Fusion.
-
-    Formula::
-
-        score(d) = Σ_i  weight_i / (rrf_k + rank_i(d))
-
-    where ``rank_i(d)`` is 1-based position in result list *i*.
-    Documents absent from a list get zero contribution from it.
-
-    Parameters
-    ----------
-    result_lists : One list of RetrievalResult per retriever.
-    weights      : Per-list weight (must match length of result_lists).
-    top_k        : Number of results to return after fusion.
-    rrf_k        : Dampening constant (default 60).
-    """
-    scores: dict[str, float]          = {}
-    items:  dict[str, RetrievalResult] = {}
-
-    for result_list, weight in zip(result_lists, weights):
-        for rank, result in enumerate(result_list, start=1):
-            key = result.unique_key()
-            scores[key] = scores.get(key, 0.0) + weight / (rrf_k + rank)
-            if key not in items:
-                items[key] = result
-
-    fused = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-    return [
-        RetrievalResult(
-            content=items[key].content,
-            score=round(score, 6),
-            source=items[key].source,
-            metadata=items[key].metadata,
-        )
-        for key, score in fused
-    ]
+    """Delegate to RRFStep for a single-call fusion."""
+    ctx = PipelineContext(query="", top_k=top_k, result_lists=result_lists)
+    RRFStep(weights=weights, rrf_k=rrf_k).run(ctx)
+    return ctx.candidates[:top_k]
 
 
 # ---------------------------------------------------------------------------
