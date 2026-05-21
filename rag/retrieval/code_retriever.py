@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 log = AppLogger.get(__name__)
 
-_VALID_LEVELS = frozenset({"repo", "file", "symbol", "block"})
+_VALID_LEVELS = frozenset({"file", "symbol", "block"})
 
 
 class CodeRetriever:
@@ -46,10 +46,9 @@ class CodeRetriever:
     ----------
     indexer   : Existing ``CodeIndexer`` instance.
     level     : Which Chroma collection to search.  One of:
-                ``"repo"`` (architecture overview),
-                ``"file"`` (per-file module summary),
-                ``"symbol"`` (class/function/method — default),
-                ``"block"`` (full code text).
+                ``"file"`` (per-file module summary, in the ``documents`` collection),
+                ``"symbol"`` (class/function/method — default, in the ``symbols`` collection),
+                ``"block"`` (full code text, in the ``code_block`` collection).
     fetch_k   : Candidate pool size fetched before optional reranking.
     reranker  : Optional reranker applied after vector retrieval.
     """

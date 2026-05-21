@@ -121,11 +121,22 @@ def _sha256(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 class CodeIndexer(BaseIndexer):
-    """Multi-resolution code indexer (GCR1.4).
+    """Multi-resolution code indexer (GCR1.4 / Phase 2 Step 2.3a).
 
-    Manages four Chroma collections at different granularities.  All
-    collections live in the same *persist_directory* but use distinct
-    collection names derived from *collection_prefix*.
+    Manages three Chroma collections at different granularities:
+
+      documents — one document per source file (module-level summary).
+                  Shared with the document ingestion pipeline; use
+                  ``source_type`` metadata to distinguish origins.
+      symbols   — one document per symbol (class / function / method).
+                  Primary retrieval collection.
+      code_block — one document per code chunk (full code text).
+                   Fine-grained reasoning collection.
+
+    The legacy ``code_repo`` collection (repo-level overview) is no longer
+    written by default.  Repo-level metadata (repo_root, branch, scanned_at)
+    is folded into every file-level document so it remains queryable without
+    a dedicated collection.
 
     Implements ``BaseIndexer`` so document and code indexing participate in
     the same lifecycle.  ``source`` in all BaseIndexer methods is a
@@ -135,29 +146,52 @@ class CodeIndexer(BaseIndexer):
     ----------
     persist_directory  : Chroma storage directory path.
     embedding_function : Any LangChain ``Embeddings`` instance.
-    collection_prefix  : Prefix shared by all four collection names.
-                         Default ``"code"`` → ``code_repo``, ``code_file``,
-                         ``code_symbol``, ``code_block``.
+    collection_prefix  : Legacy prefix used for the block collection name
+                         (``"{prefix}_block"``) and as a fallback for any
+                         level not listed in *collection_names*.
+                         Default ``"code"`` → ``code_block``.
+    collection_names   : Optional per-level name overrides.  Default mapping:
+                         ``{"file": "documents", "symbol": "symbols",
+                           "block": "code_block"}``.
+                         Pass ``{"file": "rag_collection"}`` to share the
+                         document collection used by the document pipeline.
     """
 
-    LEVELS = ("repo", "file", "symbol", "block")
+    LEVELS = ("file", "symbol", "block")
+
+    # Default collection names after Step 2.3a consolidation.
+    # Override per-level via the collection_names constructor argument.
+    _DEFAULT_COLLECTION_NAMES: dict[str, str] = {
+        "file":   "documents",   # shared with document pipeline
+        "symbol": "symbols",     # consolidated from code_symbol
+        "block":  "code_block",  # unchanged — fine-grained code text
+    }
 
     def __init__(
         self,
         persist_directory: str,
         embedding_function,
         collection_prefix: str = "code",
+        collection_names: dict[str, str] | None = None,
     ) -> None:
         self._persist_dir = persist_directory
         self._embed = embedding_function
         self._prefix = collection_prefix
         self._dbs: dict[str, Chroma] = {}
+        # Merge caller overrides on top of class-level defaults.
+        self._collection_names: dict[str, str] = {**self._DEFAULT_COLLECTION_NAMES}
+        if collection_names:
+            self._collection_names.update(collection_names)
 
     # ── Collection access ─────────────────────────────────────────────────
 
     def collection_name(self, level: str) -> str:
-        """Return the Chroma collection name for *level*."""
-        return f"{self._prefix}_{level}"
+        """Return the Chroma collection name for *level*.
+
+        Checks the per-instance ``_collection_names`` mapping first; falls
+        back to ``"{prefix}_{level}"`` for any level not listed there.
+        """
+        return self._collection_names.get(level) or f"{self._prefix}_{level}"
 
     def _db(self, level: str) -> Chroma:
         if level not in self._dbs:
@@ -350,10 +384,21 @@ class CodeIndexer(BaseIndexer):
                 is_generated = rf.is_generated
 
             text = _file_text(file_path, language, module_chunk.docstring, sym_lines)
+
+            # Include repo-level fields in every file document so callers
+            # can filter or display repo context without a separate collection.
+            repo_root   = manifest.repo_root   if manifest else ""
+            branch      = manifest.branch      if manifest else ""
+            scanned_at  = manifest.scanned_at  if manifest else ""
+
             doc = Document(
                 page_content=text,
                 metadata={
+                    "source_type":  "code",
                     "repo_id":      module_chunk.repo_id,
+                    "repo_root":    repo_root,
+                    "branch":       branch,
+                    "scanned_at":   scanned_at,
                     "file_path":    file_path,
                     "language":     language,
                     "is_test":      is_test,
@@ -446,7 +491,12 @@ class CodeIndexer(BaseIndexer):
         chunks: list[CodeChunk],
         store: SymbolStore | None = None,
     ) -> dict[str, dict]:
-        """Index all four collections in a single call.
+        """Index file, symbol, and block collections in a single call.
+
+        The legacy ``code_repo`` collection is no longer written here;
+        repository-level metadata is now embedded in every file document.
+        Call ``index_manifest()`` directly if you still need the repo
+        collection for other purposes.
 
         Parameters
         ----------
@@ -463,7 +513,6 @@ class CodeIndexer(BaseIndexer):
             store = SymbolStore.from_chunks(chunks)
 
         return {
-            "repo":   self.index_manifest(manifest, chunks),
             "file":   self.index_files(chunks, manifest),
             "symbol": self.index_symbols(store, chunks),
             "block":  self.index_blocks(chunks),
