@@ -429,6 +429,51 @@ class FileSnapshot:
 
 
 # ---------------------------------------------------------------------------
+# DependencyEdge  (GCR2.1 — Dependency Graph)
+# ---------------------------------------------------------------------------
+
+#: All valid edge type strings.
+EDGE_TYPES = frozenset({"IMPORTS", "EXTENDS", "IMPLEMENTS", "CALLS"})
+
+
+@dataclass
+class DependencyEdge:
+    """A directed dependency edge between two code symbols or modules.
+
+    Attributes
+    ----------
+    edge_id   : Deterministic ID: sha256(src_id + "|" + edge_type + "|" +
+                dst_id + "|" + file_path).  Collisions are negligible for
+                any realistic codebase.
+    src_id    : Source identifier in ``"{repo_id}::{file_path}::{type}::{name}"``
+                format (matches Symbol.symbol_id).  The module symbol is used
+                when the edge is file-level (e.g. IMPORTS, CALLS).
+    dst_id    : Target identifier.  For references resolved within the same
+                repo the same symbol_id format is used.  For unresolved or
+                external references: ``"import::{fully.qualified.path}"``.
+    edge_type : One of ``EDGE_TYPES``.
+    repo_id   : Logical repository identifier.
+    file_path : Source file (relative POSIX path) where the edge was detected.
+    line_no   : 1-based line number of the statement that produced this edge.
+    """
+
+    edge_id:   str
+    src_id:    str
+    dst_id:    str
+    edge_type: str
+    repo_id:   str
+    file_path: str
+    line_no:   int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DependencyEdge":
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
