@@ -507,6 +507,25 @@ class CodeIndexer:
             kwargs["filter"] = filter
         return db.similarity_search(query, **kwargs)
 
+    def search_with_scores(
+        self,
+        query: str,
+        level: str = "symbol",
+        k: int = 5,
+        filter: dict | None = None,
+    ) -> list[tuple[Document, float]]:
+        """Similarity search returning ``(Document, relevance_score)`` pairs.
+
+        Chroma L2 distance is converted: ``relevance = 1 / (1 + distance)``
+        so scores are in (0, 1] with higher meaning more relevant.
+        """
+        db = self._db(level)
+        kwargs: dict = {"k": k}
+        if filter:
+            kwargs["filter"] = filter
+        raw = db.similarity_search_with_score(query, **kwargs)
+        return [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
+
     def collection_stats(self) -> dict[str, int]:
         """Return document count for each of the four collections."""
         stats: dict[str, int] = {}
