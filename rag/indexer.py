@@ -83,6 +83,62 @@ class IndexStats:
 
 
 # ---------------------------------------------------------------------------
+# ChangeSet + diff_by_content_hash — shared incremental diff utility
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ChangeSet:
+    """Result of comparing existing and incoming content hashes.
+
+    Each field is a list of document IDs in that change category.
+    """
+
+    added:    list[str] = field(default_factory=list)
+    modified: list[str] = field(default_factory=list)
+    skipped:  list[str] = field(default_factory=list)
+    deleted:  list[str] = field(default_factory=list)
+
+
+def diff_by_content_hash(
+    existing: dict[str, str],
+    incoming: dict[str, str],
+) -> ChangeSet:
+    """Classify incoming IDs against stored content hashes.
+
+    Pure function — performs no I/O.  Intended for use by any indexer that
+    stores a ``content_hash`` field in its document metadata (CodeIndexer,
+    future GitIndexer, etc.).
+
+    Parameters
+    ----------
+    existing : Mapping of id → stored content_hash (fetched from the store).
+    incoming : Mapping of id → new content_hash (computed from current data).
+
+    Returns
+    -------
+    ChangeSet with four mutually-exclusive ID lists:
+      added    — IDs not yet in the store.
+      modified — IDs whose hash changed.
+      skipped  — IDs whose hash is identical (no write needed).
+      deleted  — IDs in *existing* but absent from *incoming*.
+    """
+    added: list[str] = []
+    modified: list[str] = []
+    skipped: list[str] = []
+
+    for id_, hash_ in incoming.items():
+        if id_ not in existing:
+            added.append(id_)
+        elif existing[id_] != hash_:
+            modified.append(id_)
+        else:
+            skipped.append(id_)
+
+    deleted = [id_ for id_ in existing if id_ not in incoming]
+    return ChangeSet(added=added, modified=modified, skipped=skipped, deleted=deleted)
+
+
+# ---------------------------------------------------------------------------
 # BaseIndexer — abstract lifecycle contract
 # ---------------------------------------------------------------------------
 

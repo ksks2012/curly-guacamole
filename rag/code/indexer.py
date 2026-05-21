@@ -42,7 +42,7 @@ from langchain_core.documents import Document
 from utils.logger import AppLogger
 from rag.code.schema import CodeChunk, RepoManifest, Symbol
 from rag.code.symbol_store import SymbolStore
-from rag.indexer import BaseIndexer, IndexStats
+from rag.indexer import BaseIndexer, ChangeSet, IndexStats, diff_by_content_hash
 
 log = AppLogger.get(__name__)
 
@@ -249,37 +249,32 @@ class CodeIndexer(BaseIndexer):
         ):
             existing[eid] = (emeta or {}).get("content_hash", "")
 
-        to_add: list[tuple[str, Document]] = []
-        to_update: list[tuple[str, Document]] = []
+        # Classify changes via the shared content-hash diff utility.
+        doc_by_id = dict(zip(ids, docs))
+        incoming = {
+            doc_id: doc.metadata.get("content_hash", "")
+            for doc_id, doc in doc_by_id.items()
+        }
+        changeset = diff_by_content_hash(existing, incoming)
 
-        for doc_id, doc in zip(ids, docs):
-            new_hash = doc.metadata.get("content_hash", "")
-            if doc_id not in existing:
-                to_add.append((doc_id, doc))
-            elif existing[doc_id] != new_hash:
-                to_update.append((doc_id, doc))
-            else:
-                stats["skipped"] += 1
+        if changeset.added:
+            add_docs = [doc_by_id[i] for i in changeset.added]
+            db.add_documents(add_docs, ids=changeset.added)
+            stats["added"] += len(changeset.added)
+            log.debug("CodeIndexer[%s] +%d added", level, len(changeset.added))
 
-        if to_add:
-            add_ids, add_docs = zip(*to_add)
-            db.add_documents(list(add_docs), ids=list(add_ids))
-            stats["added"] += len(to_add)
-            log.debug("CodeIndexer[%s] +%d added", level, len(to_add))
+        if changeset.modified:
+            mod_docs = [doc_by_id[i] for i in changeset.modified]
+            db.update_documents(changeset.modified, mod_docs)
+            stats["updated"] += len(changeset.modified)
+            log.debug("CodeIndexer[%s] ~%d updated", level, len(changeset.modified))
 
-        if to_update:
-            upd_ids, upd_docs = zip(*to_update)
-            db.update_documents(list(upd_ids), list(upd_docs))
-            stats["updated"] += len(to_update)
-            log.debug("CodeIndexer[%s] ~%d updated", level, len(to_update))
+        stats["skipped"] += len(changeset.skipped)
 
-        if prune_missing:
-            new_id_set = set(ids)
-            stale = [eid for eid in existing if eid not in new_id_set]
-            if stale:
-                db.delete(stale)
-                stats["deleted"] += len(stale)
-                log.debug("CodeIndexer[%s] -%d deleted", level, len(stale))
+        if prune_missing and changeset.deleted:
+            db.delete(changeset.deleted)
+            stats["deleted"] += len(changeset.deleted)
+            log.debug("CodeIndexer[%s] -%d deleted", level, len(changeset.deleted))
 
         return stats
 
