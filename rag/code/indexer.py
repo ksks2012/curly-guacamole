@@ -42,6 +42,7 @@ from langchain_core.documents import Document
 from utils.logger import AppLogger
 from rag.code.schema import CodeChunk, RepoManifest, Symbol
 from rag.code.symbol_store import SymbolStore
+from rag.indexer import BaseIndexer, IndexStats
 
 log = AppLogger.get(__name__)
 
@@ -119,12 +120,16 @@ def _sha256(text: str) -> str:
 # CodeIndexer
 # ---------------------------------------------------------------------------
 
-class CodeIndexer:
+class CodeIndexer(BaseIndexer):
     """Multi-resolution code indexer (GCR1.4).
 
     Manages four Chroma collections at different granularities.  All
     collections live in the same *persist_directory* but use distinct
     collection names derived from *collection_prefix*.
+
+    Implements ``BaseIndexer`` so document and code indexing participate in
+    the same lifecycle.  ``source`` in all BaseIndexer methods is a
+    ``(RepoManifest, list[CodeChunk])`` tuple; ``source_id`` is ``repo_id``.
 
     Parameters
     ----------
@@ -466,8 +471,9 @@ class CodeIndexer:
 
     # ── Deletion ──────────────────────────────────────────────────────────
 
-    def delete_repo(self, repo_id: str) -> None:
+    def delete_repo(self, repo_id: str) -> IndexStats:
         """Remove all documents for *repo_id* from every collection."""
+        total_deleted = 0
         for level in self.LEVELS:
             try:
                 db = self._db(level)
@@ -475,12 +481,14 @@ class CodeIndexer:
                 ids = result.get("ids", [])
                 if ids:
                     db.delete(ids)
+                    total_deleted += len(ids)
                     log.info(
                         "CodeIndexer.delete_repo: removed %d docs from [%s]",
                         len(ids), level,
                     )
             except Exception as e:
                 log.warning("CodeIndexer.delete_repo[%s]: %s", level, e)
+        return IndexStats(deleted=total_deleted)
 
     # ── Query helpers ─────────────────────────────────────────────────────
 
@@ -536,3 +544,75 @@ class CodeIndexer:
             except Exception:
                 stats[level] = 0
         return stats
+
+    # ── BaseIndexer lifecycle ─────────────────────────────────────────────
+
+    @staticmethod
+    def _agg(level_stats: dict[str, dict]) -> IndexStats:
+        """Aggregate per-level stat dicts into a single IndexStats."""
+        return IndexStats.aggregate(
+            [IndexStats.from_dict(s) for s in level_stats.values()]
+        )
+
+    def ingest(
+        self,
+        source: tuple["RepoManifest", list["CodeChunk"]],
+        store: "SymbolStore | None" = None,
+        **_,
+    ) -> IndexStats:
+        """Index all four collections from *(manifest, chunks)*.
+
+        Equivalent to ``index_all()``.  Already incremental — only changed
+        or new documents trigger embedding generation.
+
+        Parameters
+        ----------
+        source : ``(RepoManifest, list[CodeChunk])`` tuple.
+        store  : Optional pre-built SymbolStore; built from chunks if None.
+        """
+        manifest, chunks = source
+        return self._agg(self.index_all(manifest, chunks, store=store))
+
+    def update(
+        self,
+        source: tuple["RepoManifest", list["CodeChunk"]],
+        store: "SymbolStore | None" = None,
+        **_,
+    ) -> IndexStats:
+        """Incrementally update indexed content from *(manifest, chunks)*.
+
+        Aliases ``ingest()`` — ``_upsert()`` already handles add/update/skip.
+        """
+        return self.ingest(source, store=store)
+
+    def delete(self, source_id: str) -> IndexStats:
+        """Remove all documents for repo *source_id* from every collection.
+
+        Parameters
+        ----------
+        source_id : ``repo_id`` value used when the repository was indexed.
+        """
+        return self.delete_repo(source_id)
+
+    def reindex(
+        self,
+        source: tuple["RepoManifest", list["CodeChunk"]],
+        store: "SymbolStore | None" = None,
+        **_,
+    ) -> IndexStats:
+        """Full rebuild: delete existing repo data then re-ingest.
+
+        Parameters
+        ----------
+        source : ``(RepoManifest, list[CodeChunk])`` tuple.
+        store  : Optional pre-built SymbolStore.
+        """
+        manifest, chunks = source
+        del_stats = self.delete(manifest.repo_id)
+        ing_stats = self.ingest(source, store=store)
+        return IndexStats(
+            added=ing_stats.added,
+            updated=ing_stats.updated,
+            skipped=ing_stats.skipped,
+            deleted=del_stats.deleted,
+        )

@@ -7,7 +7,26 @@ Responsibilities:
   - Call LangChain's index() to write documents to the vector store
 
 LocalLlamaClient holds an Indexer and delegates all write operations to it.
+
+BaseIndexer / IndexStats
+------------------------
+``BaseIndexer`` is an ABC that ``DocumentIndexer`` and ``CodeIndexer`` both
+implement.  It defines the four lifecycle operations every indexer must
+support:
+
+    ingest(source, **kwargs)   — add content from *source* for the first time
+    update(source, **kwargs)   — incrementally re-index changed content
+    delete(source_id)          — remove all content identified by *source_id*
+    reindex(source, **kwargs)  — full rebuild: delete + ingest
+
+``IndexStats`` is the unified return type so callers can log or display
+added/updated/skipped/deleted counts without knowing which backend ran.
 """
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 from langchain_classic.indexes import SQLRecordManager, index
 from langchain_core.documents import Document
@@ -15,6 +34,103 @@ from langchain_core.documents import Document
 from utils.logger import AppLogger
 
 log = AppLogger.get(__name__)
+
+
+# ---------------------------------------------------------------------------
+# IndexStats — unified return type for all indexer operations
+# ---------------------------------------------------------------------------
+
+@dataclass
+class IndexStats:
+    """Counts of documents affected by one indexer operation."""
+
+    added:   int = 0
+    updated: int = 0
+    skipped: int = 0
+    deleted: int = 0
+
+    def __add__(self, other: "IndexStats") -> "IndexStats":
+        return IndexStats(
+            added=self.added     + other.added,
+            updated=self.updated + other.updated,
+            skipped=self.skipped + other.skipped,
+            deleted=self.deleted + other.deleted,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"IndexStats(added={self.added}, updated={self.updated}, "
+            f"skipped={self.skipped}, deleted={self.deleted})"
+        )
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "IndexStats":
+        """Build from LangChain index() result dict (num_added, etc.)."""
+        return cls(
+            added=d.get("num_added",   d.get("added",   0)),
+            updated=d.get("num_updated", d.get("updated", 0)),
+            skipped=d.get("num_skipped", d.get("skipped", 0)),
+            deleted=d.get("num_deleted", d.get("deleted", 0)),
+        )
+
+    @classmethod
+    def aggregate(cls, stats: list["IndexStats"]) -> "IndexStats":
+        """Sum a list of IndexStats into one."""
+        result = cls()
+        for s in stats:
+            result = result + s
+        return result
+
+
+# ---------------------------------------------------------------------------
+# BaseIndexer — abstract lifecycle contract
+# ---------------------------------------------------------------------------
+
+class BaseIndexer(ABC):
+    """Abstract base class for all indexers.
+
+    Every indexer — document, code, git — must implement these four lifecycle
+    operations so that higher-level orchestration code can treat them
+    interchangeably.
+
+    Subclasses
+    ----------
+    DocumentIndexer  — wraps DocumentIngester + Indexer (LangChain records)
+    CodeIndexer      — wraps multi-resolution Chroma collections
+    GitIndexer       — (future) wraps git snapshot store
+    """
+
+    @abstractmethod
+    def ingest(self, source, **kwargs) -> IndexStats:
+        """Add content from *source* to the index for the first time.
+
+        For document indexers *source* is a file path.
+        For code indexers *source* is a (RepoManifest, chunks) pair.
+        """
+
+    @abstractmethod
+    def update(self, source, **kwargs) -> IndexStats:
+        """Incrementally update indexed content from *source*.
+
+        Only changed or new content should trigger embedding generation.
+        Implementations that are already incremental may alias this to ingest.
+        """
+
+    @abstractmethod
+    def delete(self, source_id: str) -> IndexStats:
+        """Remove all indexed content identified by *source_id*.
+
+        For document indexers *source_id* is the ``doc_id`` metadata key.
+        For code indexers *source_id* is the ``repo_id``.
+        """
+
+    @abstractmethod
+    def reindex(self, source, **kwargs) -> IndexStats:
+        """Full rebuild: delete existing content then re-ingest from *source*.
+
+        Combines ``delete(source_id)`` + ``ingest(source, **kwargs)`` so
+        callers do not need to manage the two-step sequence manually.
+        """
 
 
 class Indexer:
