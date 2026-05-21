@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from rag.chunk import BaseChunk
+
 
 # ---------------------------------------------------------------------------
 # RepoFile
@@ -242,16 +244,21 @@ class Symbol:
 # CodeChunk  (GCR1.2 — AST-aware Parsing)
 # ---------------------------------------------------------------------------
 
-@dataclass
-class CodeChunk:
+@dataclass(kw_only=True)
+class CodeChunk(BaseChunk):
     """A syntax-aware chunk extracted from a source file by AST parsing.
 
     Each chunk corresponds to a meaningful code boundary:
     module / class / function / method.
 
+    Extends ``BaseChunk`` — ``content`` holds the raw source text and
+    ``source_type`` defaults to ``"code"``.
+
     Attributes
     ----------
     chunk_id     : Deterministic ID: ``"{repo_id}::{file_path}::{chunk_type}::{name}"``.
+    source_type  : Always ``"code"`` for CodeChunk.
+    content      : Raw source text of the chunk (replaces the old ``code`` field).
     repo_id      : Logical repository identifier.
     file_path    : Relative POSIX path from the repo root.
     language     : Programming language (e.g. "python").
@@ -259,24 +266,27 @@ class CodeChunk:
     name         : Fully-qualified symbol name (e.g. ``"MyClass.my_method"``).
     start_line   : 1-based first line of the chunk in the source file.
     end_line     : 1-based last line of the chunk in the source file.
-    code         : Raw source text of the chunk (may be indented).
     docstring    : Extracted docstring, or ``None`` if absent.
     parent_name  : Name of the enclosing class or function, or ``None``.
-    content_hash : SHA-256 hex digest of *code* for incremental indexing.
+    content_hash : SHA-256 hex digest of *content* for incremental indexing.
     """
 
-    chunk_id:     str
-    repo_id:      str
-    file_path:    str
-    language:     str
-    chunk_type:   str    # "module" | "class" | "function" | "method"
-    name:         str
-    start_line:   int
-    end_line:     int
-    code:         str
-    docstring:    str | None
-    parent_name:  str | None
-    content_hash: str
+    source_type:  str       = "code"   # override BaseChunk default
+    repo_id:      str       = ""
+    file_path:    str       = ""
+    language:     str       = ""
+    chunk_type:   str       = ""       # "module" | "class" | "function" | "method"
+    name:         str       = ""
+    start_line:   int       = 0
+    end_line:     int       = 0
+    docstring:    str | None = None
+    parent_name:  str | None = None
+    content_hash: str       = ""
+
+    # Backward-compat alias: callers that read chunk.code still work.
+    @property
+    def code(self) -> str:
+        return self.content
 
     # ── Serialisation ─────────────────────────────────────────────────────
 
@@ -300,6 +310,17 @@ class CodeChunk:
 
     @classmethod
     def from_dict(cls, d: dict) -> "CodeChunk":
+        d = dict(d)
+        # Backward compat: old serialisation used "code" instead of "content".
+        if "content" not in d and "code" in d:
+            d["content"] = d.pop("code")
+        # Strip unknown keys that aren't CodeChunk fields to avoid TypeError.
+        known = {
+            "chunk_id", "source_type", "content", "metadata", "embedding",
+            "repo_id", "file_path", "language", "chunk_type", "name",
+            "start_line", "end_line", "docstring", "parent_name", "content_hash",
+        }
+        d = {k: v for k, v in d.items() if k in known}
         return cls(**d)
 
 
