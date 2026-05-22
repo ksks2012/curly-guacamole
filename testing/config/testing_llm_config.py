@@ -26,7 +26,7 @@ Usage:
 """
 
 import socket
-import sys
+import pytest
 from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage
@@ -66,15 +66,13 @@ def _skip(msg: str) -> None:
 
 
 def _fail(msg: str, exc: BaseException | None = None) -> None:
-    print(f"  [FAIL] {msg}")
-    if exc:
-        print(f"         {type(exc).__name__}: {exc}")
-    sys.exit(1)
+    detail = f"{type(exc).__name__}: {exc}" if exc else ""
+    pytest.fail(f"{msg}  {detail}".strip())
 
 
 def _check(condition: bool, msg: str) -> None:
     if condition:
-        _ok(msg)
+        pass
     else:
         _fail(msg)
 
@@ -83,7 +81,7 @@ def _check(condition: bool, msg: str) -> None:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_config(config: AppConfig) -> None:
+def _check_config(config: AppConfig) -> None:
     _section("Test 1: AppConfig settings")
     print(f"  model_provider = {config.model_provider!r}")
     print(f"  embed_base    = {config.embed_base!r}")
@@ -99,14 +97,13 @@ def test_config(config: AppConfig) -> None:
     _check(config.model_provider in ("openai", "openrouter"), "model_provider is a known value")
 
 
-def test_embeddings(config: AppConfig) -> None:
+def _check_embeddings(config: AppConfig) -> None:
     _section("Test 2–3: Embeddings")
 
     if not _server_up(config.embed_base):
         _skip(f"embed server not reachable at {config.embed_base!r} — skipping tests 2–3")
         return
 
-    _ok(f"embed server reachable: {config.embed_base!r}")
 
     if config.model_provider == "openrouter":
         embed = OpenRouterEmbeddings(
@@ -132,17 +129,15 @@ def test_embeddings(config: AppConfig) -> None:
     _check(isinstance(vector, list) and len(vector) > 0, "embed_query returns a list")
     _check(all(isinstance(v, float) for v in vector[:5]), "vector elements are floats")
     print(f"  vector dim = {len(vector)}, first 5 values = {[round(v, 4) for v in vector[:5]]}")
-    _ok(f"embed_query succeeded (dim={len(vector)})")
 
 
-def test_llm(config: AppConfig) -> None:
+def _check_llm(config: AppConfig) -> None:
     _section("Test 4–5: LLM chat completion")
 
     if not _server_up(config.llm_base):
         _skip(f"LLM server not reachable at {config.llm_base!r} — skipping tests 4–5")
         return
 
-    _ok(f"LLM server reachable: {config.llm_base!r}")
 
     llm = ChatOpenAI(
         base_url=config.llm_base,
@@ -162,7 +157,6 @@ def test_llm(config: AppConfig) -> None:
     _check(isinstance(content, str) and len(content) > 0, "LLM returned a non-empty response")
     print(f"  prompt   : {prompt!r}")
     print(f"  response : {content!r}")
-    _ok("LLM chat completion succeeded")
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +167,16 @@ def main() -> None:
     AppLogger.setup(level="WARNING")
     config = AppConfig()
 
-    test_config(config)
-    test_embeddings(config)
-    test_llm(config)
+    _check_config(config)
+    _check_embeddings(config)
+    _check_llm(config)
 
     print("\nAll checks completed.")
+
+
+@pytest.mark.integration
+def test_llm_config():
+    main()
 
 
 if __name__ == "__main__":

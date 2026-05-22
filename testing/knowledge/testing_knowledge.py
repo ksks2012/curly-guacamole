@@ -226,8 +226,4 @@ def test_notion_conversion():
     print("  NotionClient conversion: OK")
 
 
-if __name__ == "__main__":
-    test_metadata()
-    test_raw_store()
-    test_notion_conversion()
-    print("All tests passed.")
+

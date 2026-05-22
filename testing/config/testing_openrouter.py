@@ -26,7 +26,7 @@ Usage:
 """
 
 import socket
-import sys
+import pytest
 from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage
@@ -64,15 +64,13 @@ def _skip(msg: str) -> None:
 
 
 def _fail(msg: str, exc: BaseException | None = None) -> None:
-    print(f"  [FAIL] {msg}")
-    if exc:
-        print(f"         {type(exc).__name__}: {exc}")
-    sys.exit(1)
+    detail = f"{type(exc).__name__}: {exc}" if exc else ""
+    pytest.fail(f"{msg}  {detail}".strip())
 
 
 def _check(condition: bool, msg: str) -> None:
     if condition:
-        _ok(msg)
+        pass
     else:
         _fail(msg)
 
@@ -81,7 +79,7 @@ def _check(condition: bool, msg: str) -> None:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_provider_config(config: AppConfig) -> None:
+def _check_provider_config(config: AppConfig) -> None:
     _section("Test 1: model_provider is openrouter")
     print(f"  model_provider = {config.model_provider!r}")
     print(f"  embed_base     = {config.embed_base!r}")
@@ -91,18 +89,18 @@ def test_provider_config(config: AppConfig) -> None:
     _check(config.model_provider == "openrouter", "model_provider == 'openrouter'")
 
 
-def test_reachability(config: AppConfig) -> bool:
+def _check_reachability(config: AppConfig) -> bool:
     """Return True if OpenRouter is reachable; tests are skipped otherwise."""
     _section("Test 2: OpenRouter reachability")
     up = _host_up(OPENROUTER_HOST)
     if up:
-        _ok(f"{OPENROUTER_HOST}:443 is reachable")
+        pass
     else:
         _skip(f"{OPENROUTER_HOST}:443 not reachable — skipping tests 3-5")
     return up
 
 
-def test_embed_query(embed: OpenRouterEmbeddings) -> None:
+def _check_embed_query(embed: OpenRouterEmbeddings) -> None:
     _section("Test 3: embed_query()")
     try:
         vector = embed.embed_query("OpenRouter embedding connectivity test")
@@ -113,10 +111,9 @@ def test_embed_query(embed: OpenRouterEmbeddings) -> None:
     _check(isinstance(vector, list) and len(vector) > 0, "returns a non-empty list")
     _check(all(isinstance(v, float) for v in vector[:5]), "elements are floats")
     print(f"  dim={len(vector)}, first 5: {[round(v, 6) for v in vector[:5]]}")
-    _ok(f"embed_query succeeded (dim={len(vector)})")
 
 
-def test_embed_documents(embed: OpenRouterEmbeddings) -> None:
+def _check_embed_documents(embed: OpenRouterEmbeddings) -> None:
     _section("Test 4: embed_documents() — batch input")
     texts = ["first sentence", "second sentence", "third sentence"]
     try:
@@ -128,10 +125,9 @@ def test_embed_documents(embed: OpenRouterEmbeddings) -> None:
     _check(len(vectors) == len(texts), f"returns {len(texts)} vectors")
     _check(all(len(v) == len(vectors[0]) for v in vectors), "all vectors have equal dimension")
     print(f"  batch size={len(vectors)}, dim={len(vectors[0])}")
-    _ok("embed_documents succeeded")
 
 
-def test_llm_chat(config: AppConfig) -> None:
+def _check_llm_chat(config: AppConfig) -> None:
     _section("Test 5: ChatOpenAI via OpenRouter")
     llm = ChatOpenAI(
         base_url=config.llm_base,
@@ -150,7 +146,6 @@ def test_llm_chat(config: AppConfig) -> None:
     _check(isinstance(content, str) and len(content) > 0, "response is a non-empty string")
     print(f"  prompt   : {prompt!r}")
     print(f"  response : {content!r}")
-    _ok("LLM chat completion succeeded")
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +156,9 @@ def main() -> None:
     AppLogger.setup(level="WARNING")
     config = AppConfig()
 
-    test_provider_config(config)
+    _check_provider_config(config)
 
-    if not test_reachability(config):
+    if not _check_reachability(config):
         print("\nAll reachable checks skipped (no network).")
         return
 
@@ -173,11 +168,16 @@ def main() -> None:
         base_url=config.embed_base,
     )
 
-    test_embed_query(embed)
-    test_embed_documents(embed)
-    test_llm_chat(config)
+    _check_embed_query(embed)
+    _check_embed_documents(embed)
+    _check_llm_chat(config)
 
     print("\nAll checks completed.")
+
+
+@pytest.mark.integration
+def test_openrouter():
+    main()
 
 
 if __name__ == "__main__":
