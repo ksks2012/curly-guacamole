@@ -275,6 +275,31 @@ class GitReader:
 
         return snapshots
 
+    # ── Diff helpers (GCR2.3) ─────────────────────────────────────────────
+
+    def diff_commit_file(self, commit_hash: str, file_path: str) -> str:
+        """Return the unified diff for *file_path* as changed in *commit_hash*.
+
+        Uses ``git diff {commit_hash}^ {commit_hash} -- {file_path}``.
+        For the initial commit (no parent), falls back to showing the full
+        file content as a set of additions.
+
+        Returns ``""`` on error or when the file was not changed in this commit.
+        """
+        stdout, rc = _run_git(
+            ["diff", f"{commit_hash}^", commit_hash, "--", file_path],
+            self._root,
+        )
+        if rc == 0:
+            return stdout
+
+        # Initial commit has no parent — present the full file as new content.
+        stdout, rc = _run_git(
+            ["show", "--format=", commit_hash, "--", file_path],
+            self._root,
+        )
+        return stdout if rc == 0 else ""
+
     # ── Convenience ───────────────────────────────────────────────────────
 
     def current_branch(self) -> str:

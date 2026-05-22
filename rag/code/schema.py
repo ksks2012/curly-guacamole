@@ -506,14 +506,15 @@ class SymbolEvolution:
     renamed_from  : Previous symbol names (v1 always ``[]``; populated in GCR3).
     """
 
-    evolution_id:  str
-    symbol_name:   str
-    repo_id:       str
-    file_path:     str
-    introduced_in: str            = ""
-    modified_in:   list[str]      = field(default_factory=list)
-    deleted_in:    str            = ""
-    renamed_from:  list[str]      = field(default_factory=list)
+    evolution_id:   str
+    symbol_name:    str
+    repo_id:        str
+    file_path:      str
+    introduced_in:  str            = ""
+    modified_in:    list[str]      = field(default_factory=list)
+    deleted_in:     str            = ""
+    renamed_from:   list[str]      = field(default_factory=list)
+    change_summary: str            = ""  # GCR2.3: one-line LLM semantic summary of last significant change
 
     def is_alive(self) -> bool:
         """Return True when the symbol has not been deleted."""
@@ -530,6 +531,8 @@ class SymbolEvolution:
             if isinstance(d.get(key), str):
                 import json
                 d[key] = json.loads(d[key]) if d[key] else []
+        # Backward compat: older records without change_summary.
+        d.setdefault("change_summary", "")
         return cls(**d)
 
 def _now_iso() -> str:

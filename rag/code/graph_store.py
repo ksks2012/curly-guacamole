@@ -74,6 +74,7 @@ _symbol_evolution = Table(
     Column("modified_in",   Text,   nullable=False, default="[]"),  # JSON list
     Column("deleted_in",    String, nullable=False, default=""),
     Column("renamed_from",  Text,   nullable=False, default="[]"),  # JSON list
+    Column("change_summary", Text,  nullable=False, default=""),    # GCR2.3
     Index("idx_evo_repo",    "repo_id"),
     Index("idx_evo_file",    "repo_id", "file_path"),
     Index("idx_evo_symbol",  "repo_id", "symbol_name"),
@@ -227,6 +228,7 @@ class GraphStore:
                 "modified_in":   json.dumps(e.modified_in),
                 "deleted_in":    e.deleted_in,
                 "renamed_from":  json.dumps(e.renamed_from),
+                "change_summary": e.change_summary,
             }
             for e in evolutions
         ]
@@ -234,7 +236,10 @@ class GraphStore:
             index_elements=["evolution_id"],
             set_={
                 c: sqlite_insert(_symbol_evolution).excluded[c]
-                for c in ("introduced_in", "modified_in", "deleted_in", "renamed_from")
+                for c in (
+                    "introduced_in", "modified_in", "deleted_in",
+                    "renamed_from", "change_summary",
+                )
             },
         )
         with self._engine.begin() as conn:
@@ -306,13 +311,15 @@ class GraphStore:
 
     @staticmethod
     def _row_to_evolution(row) -> SymbolEvolution:
+        r = dict(row)
         return SymbolEvolution(
-            evolution_id=row["evolution_id"],
-            symbol_name=row["symbol_name"],
-            repo_id=row["repo_id"],
-            file_path=row["file_path"],
-            introduced_in=row["introduced_in"] or "",
-            modified_in=json.loads(row["modified_in"] or "[]"),
-            deleted_in=row["deleted_in"] or "",
-            renamed_from=json.loads(row["renamed_from"] or "[]"),
+            evolution_id=r["evolution_id"],
+            symbol_name=r["symbol_name"],
+            repo_id=r["repo_id"],
+            file_path=r["file_path"],
+            introduced_in=r.get("introduced_in") or "",
+            modified_in=json.loads(r.get("modified_in") or "[]"),
+            deleted_in=r.get("deleted_in") or "",
+            renamed_from=json.loads(r.get("renamed_from") or "[]"),
+            change_summary=r.get("change_summary") or "",
         )
