@@ -40,25 +40,6 @@ Covers:
 
 from __future__ import annotations
 
-import sys
-import tempfile
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-PASS: list[str] = []
-FAIL: list[str] = []
-
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-
-def fail(name: str, exc: Exception) -> None:
-    print(f"{name}: FAIL — {exc}")
-    FAIL.append(name)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,7 +79,6 @@ def test_file_snapshot_symbol_hashes_defaults_empty():
         file_path="f.py", content_hash="x",
     )
     assert snap.symbol_hashes == {}
-    ok("test_file_snapshot_symbol_hashes_defaults_empty")
 
 
 def test_file_snapshot_backward_compat_no_symbol_hashes():
@@ -110,7 +90,6 @@ def test_file_snapshot_backward_compat_no_symbol_hashes():
     }
     snap = FileSnapshot.from_dict(d)
     assert snap.symbol_hashes == {}
-    ok("test_file_snapshot_backward_compat_no_symbol_hashes")
 
 
 def test_file_snapshot_roundtrip_with_symbol_hashes():
@@ -118,7 +97,6 @@ def test_file_snapshot_roundtrip_with_symbol_hashes():
     snap = _snap(CA, ["foo", "bar"], {"foo": "hash1", "bar": "hash2"})
     snap2 = FileSnapshot.from_dict(snap.to_dict())
     assert snap2.symbol_hashes == {"foo": "hash1", "bar": "hash2"}
-    ok("test_file_snapshot_roundtrip_with_symbol_hashes")
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +117,6 @@ def test_symbol_evolution_roundtrip():
     )
     e2 = SymbolEvolution.from_dict(e.to_dict())
     assert e2 == e
-    ok("test_symbol_evolution_roundtrip")
 
 
 def test_symbol_evolution_from_dict_json_string_lists():
@@ -156,7 +133,6 @@ def test_symbol_evolution_from_dict_json_string_lists():
     e = SymbolEvolution.from_dict(d)
     assert e.modified_in == [CB, CC]
     assert e.renamed_from == []
-    ok("test_symbol_evolution_from_dict_json_string_lists")
 
 
 def test_symbol_evolution_is_alive():
@@ -173,7 +149,6 @@ def test_symbol_evolution_is_alive():
     )
     assert alive.is_alive() is True
     assert dead.is_alive()  is False
-    ok("test_symbol_evolution_is_alive")
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +158,6 @@ def test_symbol_evolution_is_alive():
 def test_build_empty_input():
     from rag.code.evolution_builder import build_symbol_evolutions
     assert build_symbol_evolutions([]) == []
-    ok("test_build_empty_input")
 
 
 def test_build_single_snapshot():
@@ -195,7 +169,6 @@ def test_build_single_snapshot():
     assert by_name["foo"].introduced_in == CA
     assert by_name["foo"].deleted_in == ""
     assert by_name["foo"].modified_in == []
-    ok("test_build_single_snapshot")
 
 
 def test_build_symbol_added_in_later_commit():
@@ -205,7 +178,6 @@ def test_build_symbol_added_in_later_commit():
     evos = {e.symbol_name: e for e in build_symbol_evolutions([s1, s2])}
     assert evos["foo"].introduced_in == CA
     assert evos["bar"].introduced_in == CB
-    ok("test_build_symbol_added_in_later_commit")
 
 
 def test_build_symbol_deleted():
@@ -216,7 +188,6 @@ def test_build_symbol_deleted():
     assert evos["bar"].deleted_in == CB
     assert evos["bar"].is_alive() is False
     assert evos["foo"].deleted_in == ""
-    ok("test_build_symbol_deleted")
 
 
 def test_build_symbol_modified():
@@ -226,7 +197,6 @@ def test_build_symbol_modified():
     s3 = _snap(CC, ["foo"], {"foo": "hash_v3"})
     evos = {e.symbol_name: e for e in build_symbol_evolutions([s1, s2, s3])}
     assert evos["foo"].modified_in == [CB, CC]
-    ok("test_build_symbol_modified")
 
 
 def test_build_no_hash_info_no_modified():
@@ -235,7 +205,6 @@ def test_build_no_hash_info_no_modified():
     s2 = _snap(CB, ["foo"])
     evos = {e.symbol_name: e for e in build_symbol_evolutions([s1, s2])}
     assert evos["foo"].modified_in == []
-    ok("test_build_no_hash_info_no_modified")
 
 
 def test_build_symbol_reintroduced_after_deletion():
@@ -246,7 +215,6 @@ def test_build_symbol_reintroduced_after_deletion():
     evos = {e.symbol_name: e for e in build_symbol_evolutions([s1, s2, s3])}
     # Re-introduced → deleted_in cleared since foo is in final snapshot
     assert evos["foo"].deleted_in == ""
-    ok("test_build_symbol_reintroduced_after_deletion")
 
 
 def test_build_symbol_present_throughout():
@@ -255,7 +223,6 @@ def test_build_symbol_present_throughout():
     evos = {e.symbol_name: e for e in build_symbol_evolutions(snaps)}
     assert evos["stable"].introduced_in == CA
     assert evos["stable"].deleted_in    == ""
-    ok("test_build_symbol_present_throughout")
 
 
 def test_build_renamed_from_always_empty():
@@ -263,7 +230,6 @@ def test_build_renamed_from_always_empty():
     snap = _snap(CA, ["foo"], {"foo": "h1"})
     evos = build_symbol_evolutions([snap])
     assert all(e.renamed_from == [] for e in evos)
-    ok("test_build_renamed_from_always_empty")
 
 
 def test_build_evolution_id_deterministic():
@@ -272,16 +238,15 @@ def test_build_evolution_id_deterministic():
     snap = _snap(CA, ["foo"])
     evos = build_symbol_evolutions([snap])
     assert evos[0].evolution_id == _evolution_id(REPO_ID, FILE_PATH, "foo")
-    ok("test_build_evolution_id_deterministic")
 
 
 # ---------------------------------------------------------------------------
 # GraphStore — symbol_evolution
 # ---------------------------------------------------------------------------
 
-def _make_store():
+def _make_store(tmp_path):
     from rag.code.graph_store import GraphStore
-    return GraphStore(f"{tempfile.mkdtemp()}/graph.db")
+    return GraphStore(str(tmp_path / "graph.db"))
 
 
 def _make_evolutions():
@@ -291,8 +256,8 @@ def _make_evolutions():
     return build_symbol_evolutions([s1, s2])
 
 
-def test_graph_store_upsert_and_get_evolution():
-    store = _make_store()
+def test_graph_store_upsert_and_get_evolution(tmp_path):
+    store = _make_store(tmp_path)
     evos  = _make_evolutions()
     store.upsert_evolutions(evos)
     foo = store.get_evolution(REPO_ID, FILE_PATH, "foo")
@@ -303,21 +268,19 @@ def test_graph_store_upsert_and_get_evolution():
     assert foo.deleted_in    == ""
     assert bar is not None
     assert bar.deleted_in == CB
-    ok("test_graph_store_upsert_and_get_evolution")
 
 
-def test_graph_store_upsert_evolution_idempotent():
-    store = _make_store()
+def test_graph_store_upsert_evolution_idempotent(tmp_path):
+    store = _make_store(tmp_path)
     evos  = _make_evolutions()
     store.upsert_evolutions(evos)
     store.upsert_evolutions(evos)  # second time — same data
     all_evos = store.get_evolutions(repo_id=REPO_ID)
     assert len(all_evos) == len(evos)
-    ok("test_graph_store_upsert_evolution_idempotent")
 
 
-def test_graph_store_get_evolutions_by_repo():
-    store = _make_store()
+def test_graph_store_get_evolutions_by_repo(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions(_make_evolutions())
 
     # Add second repo
@@ -333,38 +296,34 @@ def test_graph_store_get_evolutions_by_repo():
     assert all(e.repo_id == REPO_ID for e in repo_evos)
     other_evos = store.get_evolutions(repo_id="other")
     assert len(other_evos) == 1
-    ok("test_graph_store_get_evolutions_by_repo")
 
 
-def test_graph_store_get_evolutions_by_file():
-    store = _make_store()
+def test_graph_store_get_evolutions_by_file(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions(_make_evolutions())
     evos = store.get_evolutions(repo_id=REPO_ID, file_path=FILE_PATH)
     assert all(e.file_path == FILE_PATH for e in evos)
-    ok("test_graph_store_get_evolutions_by_file")
 
 
-def test_graph_store_get_evolutions_alive_only():
-    store = _make_store()
+def test_graph_store_get_evolutions_alive_only(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions(_make_evolutions())
     alive = store.get_evolutions(repo_id=REPO_ID, alive_only=True)
     assert all(e.is_alive() for e in alive)
     assert any(not e.is_alive() for e in store.get_evolutions(repo_id=REPO_ID))
-    ok("test_graph_store_get_evolutions_alive_only")
 
 
-def test_graph_store_delete_file_evolutions():
-    store = _make_store()
+def test_graph_store_delete_file_evolutions(tmp_path):
+    store = _make_store(tmp_path)
     evos  = _make_evolutions()
     store.upsert_evolutions(evos)
     deleted = store.delete_file_evolutions(REPO_ID, FILE_PATH)
     assert deleted == len(evos)
     assert store.get_evolutions(repo_id=REPO_ID) == []
-    ok("test_graph_store_delete_file_evolutions")
 
 
-def test_graph_store_delete_repo_evolutions():
-    store = _make_store()
+def test_graph_store_delete_repo_evolutions(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions(_make_evolutions())
     from rag.code.schema import SymbolEvolution, _evolution_id
     other = SymbolEvolution(
@@ -376,23 +335,20 @@ def test_graph_store_delete_repo_evolutions():
     store.delete_repo_evolutions(REPO_ID)
     assert store.get_evolutions(repo_id=REPO_ID) == []
     assert len(store.get_evolutions(repo_id="other")) == 1
-    ok("test_graph_store_delete_repo_evolutions")
 
 
-def test_graph_store_stats_includes_evolution():
-    store = _make_store()
+def test_graph_store_stats_includes_evolution(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions(_make_evolutions())
     s = store.stats()
     assert "symbol_evolution" in s
     assert s["symbol_evolution"] == len(_make_evolutions())
-    ok("test_graph_store_stats_includes_evolution")
 
 
-def test_graph_store_get_evolution_not_found():
-    store = _make_store()
+def test_graph_store_get_evolution_not_found(tmp_path):
+    store = _make_store(tmp_path)
     result = store.get_evolution(REPO_ID, FILE_PATH, "nonexistent")
     assert result is None
-    ok("test_graph_store_get_evolution_not_found")
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +390,6 @@ def test_git_reader_snapshot_file_fills_symbol_hashes():
     # Each hash must be a 64-char hex string (SHA-256)
     for h in snap.symbol_hashes.values():
         assert len(h) == 64 and all(c in "0123456789abcdef" for c in h)
-    ok("test_git_reader_snapshot_file_fills_symbol_hashes")
 
 
 def test_git_reader_snapshot_file_no_parser_empty_hashes():
@@ -444,55 +399,10 @@ def test_git_reader_snapshot_file_no_parser_empty_hashes():
         file_path="x.py", content_hash="h",
     )
     assert snap.symbol_hashes == {}
-    ok("test_git_reader_snapshot_file_no_parser_empty_hashes")
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
-TESTS = [
-    test_file_snapshot_symbol_hashes_defaults_empty,
-    test_file_snapshot_backward_compat_no_symbol_hashes,
-    test_file_snapshot_roundtrip_with_symbol_hashes,
-    test_symbol_evolution_roundtrip,
-    test_symbol_evolution_from_dict_json_string_lists,
-    test_symbol_evolution_is_alive,
-    test_build_empty_input,
-    test_build_single_snapshot,
-    test_build_symbol_added_in_later_commit,
-    test_build_symbol_deleted,
-    test_build_symbol_modified,
-    test_build_no_hash_info_no_modified,
-    test_build_symbol_reintroduced_after_deletion,
-    test_build_symbol_present_throughout,
-    test_build_renamed_from_always_empty,
-    test_build_evolution_id_deterministic,
-    test_graph_store_upsert_and_get_evolution,
-    test_graph_store_upsert_evolution_idempotent,
-    test_graph_store_get_evolutions_by_repo,
-    test_graph_store_get_evolutions_by_file,
-    test_graph_store_get_evolutions_alive_only,
-    test_graph_store_delete_file_evolutions,
-    test_graph_store_delete_repo_evolutions,
-    test_graph_store_stats_includes_evolution,
-    test_graph_store_get_evolution_not_found,
-    test_git_reader_snapshot_file_fills_symbol_hashes,
-    test_git_reader_snapshot_file_no_parser_empty_hashes,
-]
 
-if __name__ == "__main__":
-    for t in TESTS:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
-
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        for name in FAIL:
-            print(f"  - {name}")
-        sys.exit(1)
-    else:
-        print("PASS")

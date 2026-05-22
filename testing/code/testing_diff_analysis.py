@@ -32,26 +32,10 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-PASS: list[str] = []
-FAIL: list[str] = []
-
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-
-def fail(name: str, exc: Exception) -> None:
-    import traceback
-    print(f"{name}: FAIL — {exc}")
-    traceback.print_exc()
-    FAIL.append(name)
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +68,6 @@ def _make_evolution(**kwargs):
 def test_change_summary_defaults_empty():
     evo = _make_evolution()
     assert evo.change_summary == ""
-    ok("test_change_summary_defaults_empty")
 
 
 def test_change_summary_from_dict_backward_compat():
@@ -102,7 +85,6 @@ def test_change_summary_from_dict_backward_compat():
     }
     evo = SymbolEvolution.from_dict(d)
     assert evo.change_summary == ""
-    ok("test_change_summary_from_dict_backward_compat")
 
 
 def test_change_summary_roundtrip():
@@ -110,7 +92,6 @@ def test_change_summary_roundtrip():
     from rag.code.schema import SymbolEvolution
     evo2 = SymbolEvolution.from_dict(evo.to_dict())
     assert evo2.change_summary == "added retry logic on timeout"
-    ok("test_change_summary_roundtrip")
 
 
 # ---------------------------------------------------------------------------
@@ -148,14 +129,12 @@ def test_diff_analyzer_empty_diff_returns_empty():
     from rag.code.diff_analyzer import DiffAnalyzer
     da = DiffAnalyzer(_MockLLM("irrelevant"))
     assert da.summarize("foo", "") == ""
-    ok("test_diff_analyzer_empty_diff_returns_empty")
 
 
 def test_diff_analyzer_whitespace_diff_returns_empty():
     from rag.code.diff_analyzer import DiffAnalyzer
     da = DiffAnalyzer(_MockLLM("irrelevant"))
     assert da.summarize("foo", "   \n\t\n") == ""
-    ok("test_diff_analyzer_whitespace_diff_returns_empty")
 
 
 def test_diff_analyzer_returns_mock_response():
@@ -163,7 +142,6 @@ def test_diff_analyzer_returns_mock_response():
     da = DiffAnalyzer(_MockLLM("added top_k parameter to search method"))
     result = da.summarize("RAGEngine.search", SAMPLE_DIFF, FILE_PATH)
     assert result == "added top_k parameter to search method"
-    ok("test_diff_analyzer_returns_mock_response")
 
 
 def test_diff_analyzer_multiline_response_first_line_only():
@@ -171,7 +149,6 @@ def test_diff_analyzer_multiline_response_first_line_only():
     da = DiffAnalyzer(_MockLLM("added top_k parameter\n\nsome extra explanation"))
     result = da.summarize("RAGEngine.search", SAMPLE_DIFF)
     assert result == "added top_k parameter"
-    ok("test_diff_analyzer_multiline_response_first_line_only")
 
 
 def test_diff_analyzer_strips_surrounding_quotes():
@@ -179,7 +156,6 @@ def test_diff_analyzer_strips_surrounding_quotes():
     da = DiffAnalyzer(_MockLLM('"added top_k parameter to search"'))
     result = da.summarize("RAGEngine.search", SAMPLE_DIFF)
     assert result == "added top_k parameter to search"
-    ok("test_diff_analyzer_strips_surrounding_quotes")
 
 
 def test_diff_analyzer_llm_failure_returns_empty():
@@ -187,7 +163,6 @@ def test_diff_analyzer_llm_failure_returns_empty():
     da = DiffAnalyzer(_FailingLLM())
     result = da.summarize("foo", SAMPLE_DIFF)
     assert result == ""
-    ok("test_diff_analyzer_llm_failure_returns_empty")
 
 
 def test_diff_analyzer_truncates_diff():
@@ -206,7 +181,6 @@ def test_diff_analyzer_truncates_diff():
     assert len(captured) == 1
     # The prompt should contain at most 500 chars of diff content
     assert big_diff[500:] not in captured[0]
-    ok("test_diff_analyzer_truncates_diff")
 
 
 def test_diff_analyzer_no_file_path_uses_unknown():
@@ -222,7 +196,6 @@ def test_diff_analyzer_no_file_path_uses_unknown():
     da = DiffAnalyzer(CaptureLLM())
     da.summarize("foo", SAMPLE_DIFF)  # no file_path arg
     assert "<unknown>" in captured[0]
-    ok("test_diff_analyzer_no_file_path_uses_unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +229,7 @@ def _get_commits(repo: Path) -> list[str]:
     return [h.strip() for h in result.stdout.splitlines() if h.strip()]
 
 
+@pytest.mark.integration
 def test_diff_commit_file_returns_diff():
     from rag.code.git_reader import GitReader
     repo = _make_git_repo()
@@ -263,9 +237,9 @@ def test_diff_commit_file_returns_diff():
     reader = GitReader(repo)
     diff = reader.diff_commit_file(commits[1], "engine.py")
     assert "top_k" in diff
-    ok("test_diff_commit_file_returns_diff")
 
 
+@pytest.mark.integration
 def test_diff_commit_file_initial_commit_fallback():
     from rag.code.git_reader import GitReader
     repo = _make_git_repo()
@@ -275,9 +249,9 @@ def test_diff_commit_file_initial_commit_fallback():
     diff = reader.diff_commit_file(commits[0], "engine.py")
     assert diff.strip() != ""
     assert "search" in diff
-    ok("test_diff_commit_file_initial_commit_fallback")
 
 
+@pytest.mark.integration
 def test_diff_commit_file_untouched_file_returns_empty():
     from rag.code.git_reader import GitReader
     repo = _make_git_repo()
@@ -286,30 +260,28 @@ def test_diff_commit_file_untouched_file_returns_empty():
     # "other.py" was never added to the repo
     diff = reader.diff_commit_file(commits[1], "other.py")
     assert diff == ""
-    ok("test_diff_commit_file_untouched_file_returns_empty")
 
 
 # ---------------------------------------------------------------------------
 # GraphStore — change_summary
 # ---------------------------------------------------------------------------
 
-def _make_store():
+def _make_store(tmp_path):
     from rag.code.graph_store import GraphStore
-    return GraphStore(f"{tempfile.mkdtemp()}/graph.db")
+    return GraphStore(str(tmp_path / "graph.db"))
 
 
-def test_graph_store_upsert_stores_change_summary():
-    store = _make_store()
+def test_graph_store_upsert_stores_change_summary(tmp_path):
+    store = _make_store(tmp_path)
     evo = _make_evolution(change_summary="method signature extended with top_k")
     store.upsert_evolutions([evo])
     result = store.get_evolution(REPO_ID, FILE_PATH, "foo")
     assert result is not None
     assert result.change_summary == "method signature extended with top_k"
-    ok("test_graph_store_upsert_stores_change_summary")
 
 
-def test_graph_store_upsert_updates_change_summary():
-    store = _make_store()
+def test_graph_store_upsert_updates_change_summary(tmp_path):
+    store = _make_store(tmp_path)
     evo = _make_evolution(change_summary="initial summary")
     store.upsert_evolutions([evo])
 
@@ -318,65 +290,22 @@ def test_graph_store_upsert_updates_change_summary():
 
     result = store.get_evolution(REPO_ID, FILE_PATH, "foo")
     assert result.change_summary == "revised summary after rewrite"
-    ok("test_graph_store_upsert_updates_change_summary")
 
 
-def test_graph_store_empty_change_summary_stored():
-    store = _make_store()
+def test_graph_store_empty_change_summary_stored(tmp_path):
+    store = _make_store(tmp_path)
     evo = _make_evolution()  # change_summary=""
     store.upsert_evolutions([evo])
     result = store.get_evolution(REPO_ID, FILE_PATH, "foo")
     assert result.change_summary == ""
-    ok("test_graph_store_empty_change_summary_stored")
 
 
-def test_graph_store_get_evolutions_includes_change_summary():
-    store = _make_store()
+def test_graph_store_get_evolutions_includes_change_summary(tmp_path):
+    store = _make_store(tmp_path)
     store.upsert_evolutions([
         _make_evolution(change_summary="foo changed"),
     ])
     evos = store.get_evolutions(repo_id=REPO_ID)
     assert evos[0].change_summary == "foo changed"
-    ok("test_graph_store_get_evolutions_includes_change_summary")
 
 
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-TESTS = [
-    test_change_summary_defaults_empty,
-    test_change_summary_from_dict_backward_compat,
-    test_change_summary_roundtrip,
-    test_diff_analyzer_empty_diff_returns_empty,
-    test_diff_analyzer_whitespace_diff_returns_empty,
-    test_diff_analyzer_returns_mock_response,
-    test_diff_analyzer_multiline_response_first_line_only,
-    test_diff_analyzer_strips_surrounding_quotes,
-    test_diff_analyzer_llm_failure_returns_empty,
-    test_diff_analyzer_truncates_diff,
-    test_diff_analyzer_no_file_path_uses_unknown,
-    test_diff_commit_file_returns_diff,
-    test_diff_commit_file_initial_commit_fallback,
-    test_diff_commit_file_untouched_file_returns_empty,
-    test_graph_store_upsert_stores_change_summary,
-    test_graph_store_upsert_updates_change_summary,
-    test_graph_store_empty_change_summary_stored,
-    test_graph_store_get_evolutions_includes_change_summary,
-]
-
-if __name__ == "__main__":
-    for t in TESTS:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
-
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        for name in FAIL:
-            print(f"  - {name}")
-        sys.exit(1)
-    else:
-        print("PASS")

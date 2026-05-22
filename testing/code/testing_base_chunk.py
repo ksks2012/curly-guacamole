@@ -20,19 +20,6 @@ Tests:
 
 from __future__ import annotations
 
-import sys
-
-PASS = []
-FAIL = []
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-def fail(name: str, exc: Exception) -> None:
-    print(f"{name}: FAIL — {exc}")
-    FAIL.append(name)
-
 # ---------------------------------------------------------------------------
 # BaseChunk tests
 # ---------------------------------------------------------------------------
@@ -45,7 +32,6 @@ def test_base_chunk_basic():
     assert c.content == "hello world"
     assert c.metadata == {}
     assert c.embedding == []
-    ok("test_base_chunk_basic")
 
 def test_base_chunk_with_metadata():
     from rag.chunk import BaseChunk
@@ -53,14 +39,12 @@ def test_base_chunk_with_metadata():
                   metadata={"doc_id": "repo1"}, embedding=[0.1, 0.2])
     assert c.metadata["doc_id"] == "repo1"
     assert c.embedding == [0.1, 0.2]
-    ok("test_base_chunk_with_metadata")
 
 def test_base_chunk_all_source_types():
     from rag.chunk import BaseChunk
     for st in ("document", "code", "commit", "note", "qa", "summary"):
         c = BaseChunk(chunk_id="x", source_type=st, content="")
         assert c.source_type == st
-    ok("test_base_chunk_all_source_types")
 
 # ---------------------------------------------------------------------------
 # CodeChunk inheritance tests
@@ -70,7 +54,6 @@ def test_code_chunk_is_base_chunk():
     from rag.chunk import BaseChunk
     from rag.code.schema import CodeChunk
     assert issubclass(CodeChunk, BaseChunk)
-    ok("test_code_chunk_is_base_chunk")
 
 def test_code_chunk_source_type_default():
     from rag.code.schema import CodeChunk
@@ -79,7 +62,6 @@ def test_code_chunk_source_type_default():
                   chunk_type="function", name="foo",
                   start_line=1, end_line=1, content_hash="abc")
     assert c.source_type == "code"
-    ok("test_code_chunk_source_type_default")
 
 def test_code_chunk_isinstance_base():
     from rag.chunk import BaseChunk
@@ -89,7 +71,6 @@ def test_code_chunk_isinstance_base():
                   chunk_type="function", name="foo",
                   start_line=1, end_line=1, content_hash="abc")
     assert isinstance(c, BaseChunk)
-    ok("test_code_chunk_isinstance_base")
 
 def test_code_chunk_code_property_backward_compat():
     from rag.code.schema import CodeChunk
@@ -99,7 +80,6 @@ def test_code_chunk_code_property_backward_compat():
                   start_line=1, end_line=1, content_hash="h")
     assert c.code == src
     assert c.code == c.content
-    ok("test_code_chunk_code_property_backward_compat")
 
 def test_code_chunk_to_meta_has_no_content():
     from rag.code.schema import CodeChunk
@@ -112,7 +92,6 @@ def test_code_chunk_to_meta_has_no_content():
     assert "embedding" not in meta
     assert meta["chunk_id"] == "r::f::fn::foo"
     assert meta["repo_id"] == "r"
-    ok("test_code_chunk_to_meta_has_no_content")
 
 def test_code_chunk_to_dict_has_content():
     from rag.code.schema import CodeChunk
@@ -123,7 +102,6 @@ def test_code_chunk_to_dict_has_content():
     assert "content" in d
     assert "code" not in d   # old key gone
     assert d["content"] == "pass"
-    ok("test_code_chunk_to_dict_has_content")
 
 def test_code_chunk_from_dict_new_format():
     from rag.code.schema import CodeChunk
@@ -132,7 +110,6 @@ def test_code_chunk_from_dict_new_format():
          "name": "f", "start_line": 1, "end_line": 1, "content_hash": "h"}
     c = CodeChunk.from_dict(d)
     assert c.content == "pass"
-    ok("test_code_chunk_from_dict_new_format")
 
 def test_code_chunk_from_dict_old_code_key():
     """Backward compat: dicts serialised before Step 2.2 had 'code' not 'content'."""
@@ -143,7 +120,6 @@ def test_code_chunk_from_dict_old_code_key():
     c = CodeChunk.from_dict(d)
     assert c.content == "pass"
     assert c.code == "pass"
-    ok("test_code_chunk_from_dict_old_code_key")
 
 # ---------------------------------------------------------------------------
 # PythonASTParser integration
@@ -169,7 +145,6 @@ def test_ast_parser_produces_code_chunks():
     assert len(chunks) > 0
     for c in chunks:
         assert isinstance(c, CodeChunk)
-    ok("test_ast_parser_produces_code_chunks")
 
 def test_ast_parser_chunks_isinstance_base_chunk():
     from rag.chunk import BaseChunk
@@ -178,7 +153,6 @@ def test_ast_parser_chunks_isinstance_base_chunk():
     chunks = parser.parse(SOURCE, file_path="calc.py", repo_id="test")
     for c in chunks:
         assert isinstance(c, BaseChunk), f"chunk {c.chunk_id!r} is not a BaseChunk"
-    ok("test_ast_parser_chunks_isinstance_base_chunk")
 
 def test_ast_parser_code_equals_content():
     from rag.code.ast_parser import PythonASTParser
@@ -186,7 +160,6 @@ def test_ast_parser_code_equals_content():
     chunks = parser.parse(SOURCE, file_path="calc.py", repo_id="test")
     for c in chunks:
         assert c.code == c.content, f"code != content for {c.chunk_id!r}"
-    ok("test_ast_parser_code_equals_content")
 
 def test_ast_parser_source_type_is_code():
     from rag.code.ast_parser import PythonASTParser
@@ -194,7 +167,6 @@ def test_ast_parser_source_type_is_code():
     chunks = parser.parse(SOURCE, file_path="calc.py", repo_id="test")
     for c in chunks:
         assert c.source_type == "code", f"Expected 'code', got {c.source_type!r}"
-    ok("test_ast_parser_source_type_is_code")
 
 def test_ast_parser_chunk_types():
     from rag.code.ast_parser import PythonASTParser
@@ -205,40 +177,9 @@ def test_ast_parser_chunk_types():
     assert "function" in types
     assert "class" in types
     assert "method" in types
-    ok("test_ast_parser_chunk_types")
 
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    tests = [
-        test_base_chunk_basic,
-        test_base_chunk_with_metadata,
-        test_base_chunk_all_source_types,
-        test_code_chunk_is_base_chunk,
-        test_code_chunk_source_type_default,
-        test_code_chunk_isinstance_base,
-        test_code_chunk_code_property_backward_compat,
-        test_code_chunk_to_meta_has_no_content,
-        test_code_chunk_to_dict_has_content,
-        test_code_chunk_from_dict_new_format,
-        test_code_chunk_from_dict_old_code_key,
-        test_ast_parser_produces_code_chunks,
-        test_ast_parser_chunks_isinstance_base_chunk,
-        test_ast_parser_code_equals_content,
-        test_ast_parser_source_type_is_code,
-        test_ast_parser_chunk_types,
-    ]
-    for t in tests:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
 
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        sys.exit(1)
-    else:
-        print("PASS")

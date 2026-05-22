@@ -19,19 +19,7 @@ Tests:
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch, call
-
-PASS = []
-FAIL = []
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-def fail(name: str, exc: Exception) -> None:
-    print(f"{name}: FAIL — {exc}")
-    FAIL.append(name)
 
 # ---------------------------------------------------------------------------
 # CodeIndexer collection strategy tests
@@ -40,12 +28,10 @@ def fail(name: str, exc: Exception) -> None:
 def test_levels_no_repo():
     from rag.code.indexer import CodeIndexer
     assert "repo" not in CodeIndexer.LEVELS
-    ok("test_levels_no_repo")
 
 def test_levels_exactly_file_symbol_block():
     from rag.code.indexer import CodeIndexer
     assert set(CodeIndexer.LEVELS) == {"file", "symbol", "block"}
-    ok("test_levels_exactly_file_symbol_block")
 
 def test_default_collection_names():
     from rag.code.indexer import CodeIndexer
@@ -56,7 +42,6 @@ def test_default_collection_names():
     assert idx.collection_name("file")   == "documents"
     assert idx.collection_name("symbol") == "symbols"
     assert idx.collection_name("block")  == "code_block"
-    ok("test_default_collection_names")
 
 def test_collection_names_override():
     from rag.code.indexer import CodeIndexer
@@ -66,7 +51,6 @@ def test_collection_names_override():
     idx._dbs = {}
     assert idx.collection_name("file") == "rag_collection"
     assert idx.collection_name("symbol") == "symbols"
-    ok("test_collection_names_override")
 
 def test_collection_name_fallback_for_unknown_level():
     from rag.code.indexer import CodeIndexer
@@ -77,7 +61,6 @@ def test_collection_name_fallback_for_unknown_level():
     # repo is no longer in LEVELS but collection_name() should still work
     # as a fallback for external callers that still reference it
     assert idx.collection_name("repo") == "code_repo"
-    ok("test_collection_name_fallback_for_unknown_level")
 
 def test_init_merges_collection_names():
     """Constructor should merge caller overrides on top of defaults."""
@@ -90,7 +73,6 @@ def test_init_merges_collection_names():
     )
     assert idx.collection_name("file")   == "my_docs"
     assert idx.collection_name("symbol") == "symbols"    # default preserved
-    ok("test_init_merges_collection_names")
 
 # ---------------------------------------------------------------------------
 # index_files() metadata tests
@@ -135,7 +117,6 @@ def test_index_files_injects_source_type_code():
 
     assert len(captured_docs) == 1
     assert captured_docs[0].metadata["source_type"] == "code"
-    ok("test_index_files_injects_source_type_code")
 
 def test_index_files_injects_repo_metadata_when_manifest_provided():
     idx = _make_idx()
@@ -161,7 +142,6 @@ def test_index_files_injects_repo_metadata_when_manifest_provided():
     assert meta["repo_root"]   == "/home/user/myrepo"
     assert meta["branch"]      == "main"
     assert meta["scanned_at"]  == "2026-05-21T10:00:00+00:00"
-    ok("test_index_files_injects_repo_metadata_when_manifest_provided")
 
 def test_index_files_no_manifest_uses_empty_strings():
     idx = _make_idx()
@@ -179,7 +159,6 @@ def test_index_files_no_manifest_uses_empty_strings():
     assert meta["repo_root"]  == ""
     assert meta["branch"]     == ""
     assert meta["scanned_at"] == ""
-    ok("test_index_files_no_manifest_uses_empty_strings")
 
 # ---------------------------------------------------------------------------
 # index_all() no longer calls index_manifest()
@@ -204,7 +183,6 @@ def test_index_all_has_no_repo_key():
     assert "file"   in result
     assert "symbol" in result
     assert "block"  in result
-    ok("test_index_all_has_no_repo_key")
 
 def test_index_all_does_not_call_index_manifest():
     idx = _make_idx()
@@ -221,7 +199,6 @@ def test_index_all_does_not_call_index_manifest():
 
     idx.index_all(manifest, [chunk])
     idx.index_manifest.assert_not_called()
-    ok("test_index_all_does_not_call_index_manifest")
 
 # ---------------------------------------------------------------------------
 # CodeRetriever level validation
@@ -234,43 +211,14 @@ def test_code_retriever_rejects_repo_level():
         assert False, "Should have raised ValueError"
     except ValueError as e:
         assert "repo" in str(e).lower() or "invalid" in str(e).lower()
-        ok("test_code_retriever_rejects_repo_level")
 
 def test_code_retriever_accepts_file_symbol_block():
     from rag.retrieval.code_retriever import CodeRetriever
     for level in ("file", "symbol", "block"):
         CodeRetriever(MagicMock(), level=level)
-    ok("test_code_retriever_accepts_file_symbol_block")
 
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    tests = [
-        test_levels_no_repo,
-        test_levels_exactly_file_symbol_block,
-        test_default_collection_names,
-        test_collection_names_override,
-        test_collection_name_fallback_for_unknown_level,
-        test_init_merges_collection_names,
-        test_index_files_injects_source_type_code,
-        test_index_files_injects_repo_metadata_when_manifest_provided,
-        test_index_files_no_manifest_uses_empty_strings,
-        test_index_all_has_no_repo_key,
-        test_index_all_does_not_call_index_manifest,
-        test_code_retriever_rejects_repo_level,
-        test_code_retriever_accepts_file_symbol_block,
-    ]
-    for t in tests:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
 
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        sys.exit(1)
-    else:
-        print("PASS")

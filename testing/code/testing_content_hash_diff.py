@@ -16,22 +16,8 @@ Covers:
 
 from __future__ import annotations
 
-import sys
 from dataclasses import fields
 from unittest.mock import MagicMock, patch, call
-
-PASS: list[str] = []
-FAIL: list[str] = []
-
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-
-def fail(name: str, exc: Exception) -> None:
-    print(f"{name}: FAIL — {exc}")
-    FAIL.append(name)
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +28,6 @@ def test_changeset_fields():
     from rag.indexer import ChangeSet
     field_names = {f.name for f in fields(ChangeSet)}
     assert field_names == {"added", "modified", "skipped", "deleted"}
-    ok("test_changeset_fields")
 
 
 def test_changeset_defaults_empty_lists():
@@ -52,7 +37,6 @@ def test_changeset_defaults_empty_lists():
     assert cs.modified == []
     assert cs.skipped == []
     assert cs.deleted == []
-    ok("test_changeset_defaults_empty_lists")
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +47,6 @@ def test_diff_both_empty():
     from rag.indexer import diff_by_content_hash
     cs = diff_by_content_hash({}, {})
     assert cs.added == [] and cs.modified == [] and cs.skipped == [] and cs.deleted == []
-    ok("test_diff_both_empty")
 
 
 def test_diff_all_new():
@@ -72,7 +55,6 @@ def test_diff_all_new():
     cs = diff_by_content_hash({}, incoming)
     assert set(cs.added) == {"a", "b", "c"}
     assert cs.modified == [] and cs.skipped == [] and cs.deleted == []
-    ok("test_diff_all_new")
 
 
 def test_diff_all_deleted():
@@ -81,7 +63,6 @@ def test_diff_all_deleted():
     cs = diff_by_content_hash(existing, {})
     assert set(cs.deleted) == {"a", "b"}
     assert cs.added == [] and cs.modified == [] and cs.skipped == []
-    ok("test_diff_all_deleted")
 
 
 def test_diff_all_skipped():
@@ -90,7 +71,6 @@ def test_diff_all_skipped():
     cs = diff_by_content_hash(hashes, dict(hashes))
     assert set(cs.skipped) == {"a", "b", "c"}
     assert cs.added == [] and cs.modified == [] and cs.deleted == []
-    ok("test_diff_all_skipped")
 
 
 def test_diff_all_modified():
@@ -100,7 +80,6 @@ def test_diff_all_modified():
     cs = diff_by_content_hash(existing, incoming)
     assert set(cs.modified) == {"a", "b"}
     assert cs.added == [] and cs.skipped == [] and cs.deleted == []
-    ok("test_diff_all_modified")
 
 
 def test_diff_mixed():
@@ -124,7 +103,6 @@ def test_diff_mixed():
     # mutually exclusive
     all_ids = cs.added + cs.modified + cs.skipped + cs.deleted
     assert len(all_ids) == len(set(all_ids)), "IDs should not appear in multiple categories"
-    ok("test_diff_mixed")
 
 
 def test_diff_empty_hash_treated_as_distinct():
@@ -132,7 +110,6 @@ def test_diff_empty_hash_treated_as_distinct():
     from rag.indexer import diff_by_content_hash
     cs = diff_by_content_hash({"a": ""}, {"a": "h1"})
     assert "a" in cs.modified
-    ok("test_diff_empty_hash_treated_as_distinct")
 
 
 def test_diff_existing_not_mutated():
@@ -145,7 +122,6 @@ def test_diff_existing_not_mutated():
     diff_by_content_hash(existing, incoming)
     assert existing == existing_copy
     assert incoming == incoming_copy
-    ok("test_diff_existing_not_mutated")
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +157,6 @@ def test_upsert_add_calls_add_documents():
     fake_db.add_documents.assert_called_once()
     assert result["added"] == 2
     assert result["updated"] == 0 and result["skipped"] == 0 and result["deleted"] == 0
-    ok("test_upsert_add_calls_add_documents")
 
 
 def test_upsert_skip_no_db_write():
@@ -199,7 +174,6 @@ def test_upsert_skip_no_db_write():
     fake_db.add_documents.assert_not_called()
     fake_db.update_documents.assert_not_called()
     assert result["skipped"] == 1
-    ok("test_upsert_skip_no_db_write")
 
 
 def test_upsert_modified_calls_update_documents():
@@ -216,7 +190,6 @@ def test_upsert_modified_calls_update_documents():
 
     fake_db.update_documents.assert_called_once()
     assert result["updated"] == 1
-    ok("test_upsert_modified_calls_update_documents")
 
 
 def test_upsert_prune_deletes_stale():
@@ -234,7 +207,6 @@ def test_upsert_prune_deletes_stale():
 
     fake_db.delete.assert_called_once_with(["old_id"])
     assert result["deleted"] == 1
-    ok("test_upsert_prune_deletes_stale")
 
 
 def test_upsert_no_prune_suppresses_delete():
@@ -251,40 +223,10 @@ def test_upsert_no_prune_suppresses_delete():
 
     fake_db.delete.assert_not_called()
     assert result["deleted"] == 0
-    ok("test_upsert_no_prune_suppresses_delete")
 
 
 # ---------------------------------------------------------------------------
 # Run all
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    tests = [
-        test_changeset_fields,
-        test_changeset_defaults_empty_lists,
-        test_diff_both_empty,
-        test_diff_all_new,
-        test_diff_all_deleted,
-        test_diff_all_skipped,
-        test_diff_all_modified,
-        test_diff_mixed,
-        test_diff_empty_hash_treated_as_distinct,
-        test_diff_existing_not_mutated,
-        test_upsert_add_calls_add_documents,
-        test_upsert_skip_no_db_write,
-        test_upsert_modified_calls_update_documents,
-        test_upsert_prune_deletes_stale,
-        test_upsert_no_prune_suppresses_delete,
-    ]
-    for t in tests:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
 
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        sys.exit(1)
-    else:
-        print("PASS")

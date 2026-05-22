@@ -43,26 +43,6 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import sys
-import tempfile
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-PASS: list[str] = []
-FAIL: list[str] = []
-
-
-def ok(name: str) -> None:
-    print(f"{name}: OK")
-    PASS.append(name)
-
-
-def fail(name: str, exc: Exception) -> None:
-    import traceback
-    print(f"{name}: FAIL — {exc}")
-    traceback.print_exc()
-    FAIL.append(name)
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +110,6 @@ def test_commit_record_defaults():
     assert r.content_hash     == ""
     assert r.affected_symbols == []
     assert r.files_changed    == []
-    ok("test_commit_record_defaults")
 
 
 def test_commit_record_roundtrip():
@@ -138,7 +117,6 @@ def test_commit_record_roundtrip():
     from rag.code.schema import CommitRecord
     r2 = CommitRecord.from_dict(r.to_dict())
     assert r2 == r
-    ok("test_commit_record_roundtrip")
 
 
 def test_commit_record_from_dict_csv_strings():
@@ -156,7 +134,6 @@ def test_commit_record_from_dict_csv_strings():
     r = CommitRecord.from_dict(d)
     assert r.files_changed    == ["a.py", "b.py"]
     assert r.affected_symbols == ["foo", "bar.baz"]
-    ok("test_commit_record_from_dict_csv_strings")
 
 
 def test_commit_record_to_document_content():
@@ -165,7 +142,6 @@ def test_commit_record_to_document_content():
     assert "introduced retrieval engine" in doc.page_content
     assert "foo" in doc.page_content
     assert "bar" in doc.page_content
-    ok("test_commit_record_to_document_content")
 
 
 def test_commit_record_to_document_metadata_keys():
@@ -174,13 +150,11 @@ def test_commit_record_to_document_metadata_keys():
     for key in ("commit_hash", "repo_id", "author", "date", "source_type", "content_hash"):
         assert key in meta, f"missing metadata key: {key}"
     assert meta["source_type"] == "commit"
-    ok("test_commit_record_to_document_metadata_keys")
 
 
 def test_commit_record_short_hash():
     r = _commit_record()
     assert r.short_hash == CA[:12]
-    ok("test_commit_record_short_hash")
 
 
 def test_commit_record_no_summary_falls_back_to_message_in_doc():
@@ -194,7 +168,6 @@ def test_commit_record_no_summary_falls_back_to_message_in_doc():
     )
     doc = r.to_document()
     assert "add reranking support" in doc.page_content
-    ok("test_commit_record_no_summary_falls_back_to_message_in_doc")
 
 
 # ---------------------------------------------------------------------------
@@ -204,13 +177,11 @@ def test_commit_record_no_summary_falls_back_to_message_in_doc():
 def test_commit_record_id_deterministic():
     from rag.code.schema import _commit_record_id
     assert _commit_record_id(REPO_ID, CA) == _commit_record_id(REPO_ID, CA)
-    ok("test_commit_record_id_deterministic")
 
 
 def test_commit_record_id_unique_per_commit():
     from rag.code.schema import _commit_record_id
     assert _commit_record_id(REPO_ID, CA) != _commit_record_id(REPO_ID, CB)
-    ok("test_commit_record_id_unique_per_commit")
 
 
 # ---------------------------------------------------------------------------
@@ -221,34 +192,29 @@ def test_derive_introduced_in():
     from rag.code.commit_analyzer import derive_affected_symbols
     evos = [_evolution("foo", introduced=CA)]
     assert "foo" in derive_affected_symbols(CA, evos)
-    ok("test_derive_introduced_in")
 
 
 def test_derive_modified_in():
     from rag.code.commit_analyzer import derive_affected_symbols
     evos = [_evolution("foo", introduced=CA, modified=[CB])]
     assert "foo" in derive_affected_symbols(CB, evos)
-    ok("test_derive_modified_in")
 
 
 def test_derive_deleted_in():
     from rag.code.commit_analyzer import derive_affected_symbols
     evos = [_evolution("foo", introduced=CA, deleted=CB)]
     assert "foo" in derive_affected_symbols(CB, evos)
-    ok("test_derive_deleted_in")
 
 
 def test_derive_not_touched():
     from rag.code.commit_analyzer import derive_affected_symbols
     evos = [_evolution("foo", introduced=CA)]
     assert derive_affected_symbols(CB, evos) == []
-    ok("test_derive_not_touched")
 
 
 def test_derive_empty_evolutions():
     from rag.code.commit_analyzer import derive_affected_symbols
     assert derive_affected_symbols(CA, []) == []
-    ok("test_derive_empty_evolutions")
 
 
 def test_derive_dedup_when_introduced_and_modified():
@@ -257,7 +223,6 @@ def test_derive_dedup_when_introduced_and_modified():
     evos = [_evolution("foo", introduced=CA, modified=[CA])]
     result = derive_affected_symbols(CA, evos)
     assert result.count("foo") == 1
-    ok("test_derive_dedup_when_introduced_and_modified")
 
 
 def test_derive_sorted():
@@ -269,7 +234,6 @@ def test_derive_sorted():
     ]
     result = derive_affected_symbols(CA, evos)
     assert result == sorted(result)
-    ok("test_derive_sorted")
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +261,6 @@ def test_analyzer_build_affected_symbols():
     analyzer = CommitAnalyzer(llm=None)
     record = analyzer.build(_commit_info(CA), evos, REPO_ID)
     assert record.affected_symbols == ["foo"]
-    ok("test_analyzer_build_affected_symbols")
 
 
 def test_analyzer_build_summary_from_mock_llm():
@@ -306,7 +269,6 @@ def test_analyzer_build_summary_from_mock_llm():
     analyzer = CommitAnalyzer(_MockLLM("introduced the foo retrieval class"))
     record = analyzer.build(_commit_info(CA), evos, REPO_ID)
     assert record.summary == "introduced the foo retrieval class"
-    ok("test_analyzer_build_summary_from_mock_llm")
 
 
 def test_analyzer_build_no_llm_summary_empty():
@@ -314,7 +276,6 @@ def test_analyzer_build_no_llm_summary_empty():
     analyzer = CommitAnalyzer(llm=None)
     record = analyzer.build(_commit_info(CA), [], REPO_ID)
     assert record.summary == ""
-    ok("test_analyzer_build_no_llm_summary_empty")
 
 
 def test_analyzer_build_llm_failure_summary_empty():
@@ -322,7 +283,6 @@ def test_analyzer_build_llm_failure_summary_empty():
     analyzer = CommitAnalyzer(_FailingLLM())
     record = analyzer.build(_commit_info(CA), [], REPO_ID)
     assert record.summary == ""
-    ok("test_analyzer_build_llm_failure_summary_empty")
 
 
 def test_analyzer_build_content_hash_uses_summary():
@@ -332,7 +292,6 @@ def test_analyzer_build_content_hash_uses_summary():
     record = analyzer.build(_commit_info(CA), [], REPO_ID)
     expected = hashlib.sha256(summary.encode()).hexdigest()
     assert record.content_hash == expected
-    ok("test_analyzer_build_content_hash_uses_summary")
 
 
 def test_analyzer_build_content_hash_falls_back_to_message():
@@ -342,7 +301,6 @@ def test_analyzer_build_content_hash_falls_back_to_message():
     record = analyzer.build(ci, [], REPO_ID)
     expected = hashlib.sha256(b"add reranker").hexdigest()
     assert record.content_hash == expected
-    ok("test_analyzer_build_content_hash_falls_back_to_message")
 
 
 def test_analyzer_build_multiline_llm_first_line_only():
@@ -350,7 +308,6 @@ def test_analyzer_build_multiline_llm_first_line_only():
     analyzer = CommitAnalyzer(_MockLLM("first line\nsecond line"))
     record = analyzer.build(_commit_info(CA), [], REPO_ID)
     assert record.summary == "first line"
-    ok("test_analyzer_build_multiline_llm_first_line_only")
 
 
 def test_analyzer_build_repo_id_and_commit_id():
@@ -360,7 +317,6 @@ def test_analyzer_build_repo_id_and_commit_id():
     record = analyzer.build(_commit_info(CA), [], REPO_ID)
     assert record.repo_id   == REPO_ID
     assert record.commit_id == _commit_record_id(REPO_ID, CA)
-    ok("test_analyzer_build_repo_id_and_commit_id")
 
 
 # ---------------------------------------------------------------------------
@@ -379,33 +335,30 @@ class _FakeEmbeddings:
         return [b / 255.0 for b in h[:16]]  # 16-dim vector
 
 
-def _make_indexer():
+def _make_indexer(tmp_path, embed=None):
     from rag.code.commit_indexer import CommitIndexer
-    tmp = tempfile.mkdtemp()
-    return CommitIndexer(tmp, _FakeEmbeddings())
+    return CommitIndexer(str(tmp_path), embed or _FakeEmbeddings())
 
 
-def test_commit_indexer_upsert_adds():
-    idx = _make_indexer()
+def test_commit_indexer_upsert_adds(tmp_path):
+    idx = _make_indexer(tmp_path)
     r = _commit_record()
     stats = idx.upsert([r], repo_id=REPO_ID)
     assert stats.added == 1
     assert idx.count(REPO_ID) == 1
-    ok("test_commit_indexer_upsert_adds")
 
 
-def test_commit_indexer_upsert_idempotent():
-    idx = _make_indexer()
+def test_commit_indexer_upsert_idempotent(tmp_path):
+    idx = _make_indexer(tmp_path)
     r = _commit_record()
     idx.upsert([r], repo_id=REPO_ID)
     stats = idx.upsert([r], repo_id=REPO_ID)
     assert stats.added   == 0
     assert stats.skipped == 1
-    ok("test_commit_indexer_upsert_idempotent")
 
 
-def test_commit_indexer_upsert_updates_on_hash_change():
-    idx = _make_indexer()
+def test_commit_indexer_upsert_updates_on_hash_change(tmp_path):
+    idx = _make_indexer(tmp_path)
     r1 = _commit_record(summary="old summary",
                          content_hash=hashlib.sha256(b"old summary").hexdigest())
     idx.upsert([r1], repo_id=REPO_ID)
@@ -414,11 +367,10 @@ def test_commit_indexer_upsert_updates_on_hash_change():
                          content_hash=hashlib.sha256(b"new summary").hexdigest())
     stats = idx.upsert([r2], repo_id=REPO_ID)
     assert stats.updated == 1
-    ok("test_commit_indexer_upsert_updates_on_hash_change")
 
 
-def test_commit_indexer_prune_missing():
-    idx = _make_indexer()
+def test_commit_indexer_prune_missing(tmp_path):
+    idx = _make_indexer(tmp_path)
     r1 = _commit_record(commit_hash=CA,
                          commit_id=hashlib.sha256(f"{REPO_ID}|{CA}".encode()).hexdigest(),
                          content_hash=hashlib.sha256(b"a").hexdigest())
@@ -432,11 +384,10 @@ def test_commit_indexer_prune_missing():
     stats = idx.upsert([r1], repo_id=REPO_ID, prune_missing=True)
     assert stats.deleted == 1
     assert idx.count(REPO_ID) == 1
-    ok("test_commit_indexer_prune_missing")
 
 
-def test_commit_indexer_delete_repo():
-    idx = _make_indexer()
+def test_commit_indexer_delete_repo(tmp_path):
+    idx = _make_indexer(tmp_path)
     idx.upsert([_commit_record()], repo_id=REPO_ID)
 
     # Add a second repo
@@ -453,20 +404,18 @@ def test_commit_indexer_delete_repo():
     assert deleted == 1
     assert idx.count(REPO_ID) == 0
     assert idx.count("other") == 1
-    ok("test_commit_indexer_delete_repo")
 
 
-def test_commit_indexer_search_returns_records():
-    idx = _make_indexer()
+def test_commit_indexer_search_returns_records(tmp_path):
+    idx = _make_indexer(tmp_path)
     idx.upsert([_commit_record(summary="introduced reranking support")], repo_id=REPO_ID)
     results = idx.search("reranking", repo_id=REPO_ID, k=5)
     assert len(results) >= 1
     assert results[0].repo_id == REPO_ID
-    ok("test_commit_indexer_search_returns_records")
 
 
-def test_commit_indexer_count_across_repos():
-    idx = _make_indexer()
+def test_commit_indexer_count_across_repos(tmp_path):
+    idx = _make_indexer(tmp_path)
     from rag.code.schema import _commit_record_id
     r1 = _commit_record()
     r2 = _commit_record(
@@ -478,59 +427,10 @@ def test_commit_indexer_count_across_repos():
     idx.upsert([r2], repo_id="other")
     assert idx.count() == 2
     assert idx.count(REPO_ID) == 1
-    ok("test_commit_indexer_count_across_repos")
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
-TESTS = [
-    test_commit_record_defaults,
-    test_commit_record_roundtrip,
-    test_commit_record_from_dict_csv_strings,
-    test_commit_record_to_document_content,
-    test_commit_record_to_document_metadata_keys,
-    test_commit_record_short_hash,
-    test_commit_record_no_summary_falls_back_to_message_in_doc,
-    test_commit_record_id_deterministic,
-    test_commit_record_id_unique_per_commit,
-    test_derive_introduced_in,
-    test_derive_modified_in,
-    test_derive_deleted_in,
-    test_derive_not_touched,
-    test_derive_empty_evolutions,
-    test_derive_dedup_when_introduced_and_modified,
-    test_derive_sorted,
-    test_analyzer_build_affected_symbols,
-    test_analyzer_build_summary_from_mock_llm,
-    test_analyzer_build_no_llm_summary_empty,
-    test_analyzer_build_llm_failure_summary_empty,
-    test_analyzer_build_content_hash_uses_summary,
-    test_analyzer_build_content_hash_falls_back_to_message,
-    test_analyzer_build_multiline_llm_first_line_only,
-    test_analyzer_build_repo_id_and_commit_id,
-    test_commit_indexer_upsert_adds,
-    test_commit_indexer_upsert_idempotent,
-    test_commit_indexer_upsert_updates_on_hash_change,
-    test_commit_indexer_prune_missing,
-    test_commit_indexer_delete_repo,
-    test_commit_indexer_search_returns_records,
-    test_commit_indexer_count_across_repos,
-]
 
-if __name__ == "__main__":
-    for t in TESTS:
-        try:
-            t()
-        except Exception as e:
-            fail(t.__name__, e)
-
-    print()
-    if FAIL:
-        print(f"FAIL  ({len(FAIL)} failed, {len(PASS)} passed)")
-        for name in FAIL:
-            print(f"  - {name}")
-        sys.exit(1)
-    else:
-        print("PASS")
