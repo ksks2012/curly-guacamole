@@ -19,6 +19,7 @@ Usage:
 
 import json
 import sys
+import pytest
 from pathlib import Path
 
 from utils.config import AppConfig
@@ -60,7 +61,7 @@ def main() -> None:
     token = config.notion_token
     if not token:
         print("ERROR: notion_token is not set in etc/config.yaml")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
 
     # IDs: CLI args take priority over config; later steps auto-fill from responses
     database_id    = sys.argv[1] if len(sys.argv) > 1 else config.notion_database_id
@@ -88,10 +89,9 @@ def main() -> None:
         print(f"  id   : {me.get('id', '?')}")
         print(f"  name : {me.get('name', '?')}")
         print(f"  owner: {owner.get('type', '?')}")
-        _ok("token is valid")
     except Exception as exc:
         _fail("token check", exc)
-        sys.exit(1)  # no point continuing without a valid token
+        pytest.fail("Integration test failed")  # no point continuing without a valid token
 
     # ------------------------------------------------------------------
     # Step 2: Database — GET /v1/databases/{id}
@@ -111,7 +111,6 @@ def main() -> None:
             if not data_source_id and sources:
                 data_source_id = sources[0]["id"]
                 print(f"  → resolved data_source_id: {data_source_id}")
-            _ok("database retrieved")
         except Exception as exc:
             _fail("database retrieval", exc)
             failures.append("database")
@@ -146,7 +145,6 @@ def main() -> None:
             if not page_id and batch:
                 page_id = batch[0]["id"]
                 print(f"  → using page_id: {page_id}")
-            _ok(f"data source returned {len(batch)} page(s)")
         except Exception as exc:
             _fail("data source query", exc)
             failures.append("data_source")
@@ -168,7 +166,6 @@ def main() -> None:
             # Auto-fill block_id from page_id (pages are valid block IDs)
             if not block_id:
                 block_id = page_id
-            _ok("markdown retrieved")
         except Exception as exc:
             _fail("markdown retrieval", exc)
             failures.append("markdown")
@@ -188,8 +185,7 @@ def main() -> None:
             for blk in first_batch[:5]:
                 print(f"    - [{blk.get('type', '?'):25s}]  {blk.get('id', '?')}")
             if len(first_batch) > 5:
-                print(f"    ... and {len(first_batch) - 5} more")
-            _ok(f"block children retrieved ({len(first_batch)} items)")
+                print(f"    ... and {len(first_batch) - 5} more items")
         except Exception as exc:
             _fail("block children retrieval", exc)
             failures.append("block_children")
@@ -200,9 +196,14 @@ def main() -> None:
     print()
     if failures:
         print(f"FAILED steps: {', '.join(failures)}")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
     else:
         print("All steps passed.")
+
+
+@pytest.mark.integration
+def test_notion_api():
+    main()
 
 
 if __name__ == "__main__":

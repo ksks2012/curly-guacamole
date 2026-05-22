@@ -20,6 +20,7 @@ Usage:
 
 import socket
 import sys
+import pytest
 from urllib.parse import urlparse
 
 from utils.config import AppConfig
@@ -48,12 +49,12 @@ def _ok(msg: str) -> None:
 
 def _fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
-    sys.exit(1)
+    pytest.fail("Integration test failed")
 
 
 def _check(condition: bool, msg: str) -> None:
     if condition:
-        _ok(msg)
+        pass
     else:
         _fail(msg)
 
@@ -77,7 +78,6 @@ def main() -> None:
     _section("Step 1: instantiate NotionRAGClient")
     client = NotionRAGClient(config)
     print(f"  workspace: {client._workspace.name!r}")
-    _ok("NotionRAGClient instantiated")
 
     # ------------------------------------------------------------------
     # Step 2: sync_and_embed  (always runs — network required)
@@ -144,9 +144,6 @@ def main() -> None:
         _check(meta.get("source_id") in known_page_ids,
                f"source_id {meta.get('source_id','?')[:8]} is a known page")
 
-    _ok(f"all {len(results)} results have correct metadata")
-
-    # ------------------------------------------------------------------
     # Step 5: hybrid search (BM25 + vector)
     # ------------------------------------------------------------------
     _section("Step 5: hybrid_search() — BM25 + RRF")
@@ -229,6 +226,11 @@ def main() -> None:
         _check(len(str(answer)) > 10, "query returned non-trivial answer")
 
     print("\nAll checks passed.")
+
+
+@pytest.mark.integration
+def test_notion_pipeline():
+    main()
 
 
 if __name__ == "__main__":

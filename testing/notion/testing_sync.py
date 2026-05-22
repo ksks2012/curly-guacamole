@@ -15,6 +15,7 @@ Config (etc/config.yaml):
 """
 
 import sys
+import pytest
 
 from utils.config import AppConfig
 from utils.logger import AppLogger
@@ -38,7 +39,7 @@ def _check(condition: bool, msg: str) -> None:
     status = "PASS" if condition else "FAIL"
     print(f"  [{status}] {msg}")
     if not condition:
-        sys.exit(1)
+        pytest.fail("Integration test failed")
 
 
 def main() -> None:
@@ -53,10 +54,10 @@ def main() -> None:
 
     if not token:
         print("ERROR: notion_token is not set in etc/config.yaml")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
     if not database_id:
         print("ERROR: notion_database_id is not set in etc/config.yaml")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
 
     print(f"notion_token     : {token[:12]}...")
     print(f"notion_database_id: {database_id}")
@@ -77,12 +78,12 @@ def main() -> None:
     else:
         if not database_id:
             print("ERROR: neither notion_data_source_id nor notion_database_id is set")
-            sys.exit(1)
+            pytest.fail("Integration test failed")
         db = client.get_database(database_id)
         data_sources = db.get("data_sources", [])
         if not data_sources:
             print("FAIL: database has no data_sources — cannot query pages via data source")
-            sys.exit(1)
+            pytest.fail("Integration test failed")
         data_source_id = data_sources[0]["id"]
         data_source_name = data_sources[0].get("name", "?")
         print(f"  data_source_id  : {data_source_id}  (resolved from database)")
@@ -147,6 +148,11 @@ def main() -> None:
         _check(len(markdown) > 0, f"markdown content is non-empty for {page.title!r}")
 
     print("\nAll checks passed.")
+
+
+@pytest.mark.integration
+def test_notion_sync():
+    main()
 
 
 if __name__ == "__main__":
