@@ -10,8 +10,9 @@ Run:
 
 from __future__ import annotations
 
-import sys
 import unittest
+
+import pytest
 from unittest.mock import MagicMock
 
 
@@ -311,7 +312,7 @@ class TestConversationMemoryC4(unittest.TestCase):
 # Live test
 # ===========================================================================
 
-@unittest.skipUnless("--live" in sys.argv, "Skipped (pass --live to run)")
+@pytest.mark.integration
 class TestResearchSessionLive(unittest.TestCase):
 
     def test_full_client_pipeline(self):
@@ -333,8 +334,4 @@ class TestResearchSessionLive(unittest.TestCase):
         self.assertTrue(any(s.name == "Live Integration Session" for s in archived))
 
 
-# ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    sys.argv = [a for a in sys.argv if a not in ("--live", "--no-live")]
-    unittest.main(verbosity=2)

@@ -23,20 +23,9 @@ Live test (--no-live to skip):
 
 from __future__ import annotations
 
-import sys
+import pytest
 from unittest.mock import MagicMock, patch, call
 from typing import Any
-
-LIVE = "--no-live" not in sys.argv
-
-
-def _ok(name: str) -> None:
-    print(f"{name}: OK")
-
-
-def _fail(name: str, err: Exception) -> None:
-    print(f"{name}: FAIL  {err}")
-    raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +46,6 @@ def test_store_session_create_read() -> None:
     state2 = store.get_or_create_session("s1")
     assert state2.session_id == "s1"
     assert state2.created_at == state.created_at
-    _ok("MemoryStore.get_or_create_session")
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +74,6 @@ def test_store_turns_ordering() -> None:
     # Should return last 3 in chronological order
     assert len(turns) == 3
     assert [t.seq for t in turns] == [3, 4, 5]
-    _ok("MemoryStore.save_turn + get_recent_turns ordering")
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +94,6 @@ def test_store_delete_session() -> None:
 
     sessions = store.list_sessions()
     assert all(s["session_id"] != "s1" for s in sessions)
-    _ok("MemoryStore.delete_session")
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +114,6 @@ def test_merge_topics() -> None:
     result2 = _merge_topics(["a", "b", "c", "d"], ["e"], max_topics=3)
     assert len(result2) == 3
     assert result2[0] == "e"
-    _ok("_merge_topics")
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +134,6 @@ def test_memory_ensure_session() -> None:
     # Calling again with a different id switches session
     memory.ensure_session("sess2")
     assert memory.session_id == "sess2"
-    _ok("ConversationMemory.ensure_session")
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +159,6 @@ def test_memory_add_turn_no_llm() -> None:
 
     state = memory.get_state()
     assert len(state.recent_questions) == 1
-    _ok("ConversationMemory.add_turn (no LLM)")
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +185,6 @@ def test_memory_add_turn_with_topic_extraction() -> None:
 
     state = memory.get_state()
     assert "RAG" in state.current_topics
-    _ok("ConversationMemory.add_turn (topic extraction)")
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +207,7 @@ def test_memory_topic_extraction_failure() -> None:
 
     # Should not raise
     turn = memory.add_turn("What is chunking?", "Chunking splits text into pieces.")
-    assert turn.topics == []  # empty due to failure
-    _ok("ConversationMemory.add_turn (topic extraction failure → non-fatal)")
+    assert turn.topics == []  # empty due to failure")
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +228,6 @@ def test_memory_set_active_project() -> None:
     memory2 = ConversationMemory(store=store, llm=None, session_id="sess")
     state = memory2.ensure_session()
     assert state.active_project == "Build Notion AI Knowledge System"
-    _ok("ConversationMemory.set_active_project (persists)")
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +254,6 @@ def test_memory_build_context_block() -> None:
     assert "Active Project:" in block
     assert "Notion RAG System" in block
     assert "What is retrieval?" in block
-    _ok("ConversationMemory.build_context_block")
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +276,6 @@ def test_memory_clear_session() -> None:
     state = memory.get_state()
     assert state.recent_questions == []
     assert state.active_project == ""
-    _ok("ConversationMemory.clear_session")
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +298,6 @@ def test_memory_max_recent() -> None:
     # In-memory list is capped at max_recent
     assert len(state.recent_questions) == 3
     assert state.recent_questions[-1].question == "Q4"
-    _ok("ConversationMemory.max_recent rolling window")
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +311,7 @@ def test_engine_memory_integration() -> None:
     mock_llm.invoke.return_value = MagicMock(content="The answer is 42.")
 
     mock_retriever = MagicMock()
-    mock_retriever.invoke.return_value = []  # no docs
+    mock_retriever.search = MagicMock(return_value=[])  # no docs
 
     mock_config = MagicMock()
     mock_config.query_expansion_enabled = False
@@ -344,7 +321,7 @@ def test_engine_memory_integration() -> None:
 
     engine = RAGEngine(
         llm=mock_llm,
-        get_retriever=lambda **kw: mock_retriever,
+        retriever=mock_retriever,
         reranker=None,
         config=mock_config,
         memory=mock_memory,
@@ -363,7 +340,6 @@ def test_engine_memory_integration() -> None:
     # The prompt passed to LLM contained memory context
     prompt_arg = str(mock_llm.invoke.call_args[0][0])
     assert "Active Project: Test" in prompt_arg
-    _ok("RAGEngine.answer (memory injection + add_turn)")
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +353,7 @@ def test_engine_memory_failure_nonfatal() -> None:
     mock_llm.invoke.return_value = MagicMock(content="Answer")
 
     mock_retriever = MagicMock()
-    mock_retriever.invoke.return_value = []
+    mock_retriever.search = MagicMock(return_value=[])
 
     mock_config = MagicMock()
     mock_config.query_expansion_enabled = False
@@ -388,7 +364,7 @@ def test_engine_memory_failure_nonfatal() -> None:
 
     engine = RAGEngine(
         llm=mock_llm,
-        get_retriever=lambda **kw: mock_retriever,
+        retriever=mock_retriever,
         reranker=None,
         config=mock_config,
         memory=mock_memory,
@@ -397,18 +373,14 @@ def test_engine_memory_failure_nonfatal() -> None:
     # Should not raise
     result = engine.answer("Any question?")
     assert result is not None
-    _ok("RAGEngine.answer (memory failure → non-fatal)")
 
 
 # ---------------------------------------------------------------------------
 # Test 15 (live) — full round-trip
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_live_round_trip() -> None:
-    if not LIVE:
-        print("Live test skipped (--no-live)")
-        return
-
     import os, tempfile
     from rag.memory.store   import MemoryStore
     from rag.memory.manager import ConversationMemory
@@ -440,29 +412,5 @@ def test_live_round_trip() -> None:
         assert "Live Test Project" in block
         print(f"Context block:\n{block}")
 
-        _ok("ConversationMemory live round-trip")
     finally:
         os.unlink(db_path)
-
-
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    test_store_session_create_read()
-    test_store_turns_ordering()
-    test_store_delete_session()
-    test_merge_topics()
-    test_memory_ensure_session()
-    test_memory_add_turn_no_llm()
-    test_memory_add_turn_with_topic_extraction()
-    test_memory_topic_extraction_failure()
-    test_memory_set_active_project()
-    test_memory_build_context_block()
-    test_memory_clear_session()
-    test_memory_max_recent()
-    test_engine_memory_integration()
-    test_engine_memory_failure_nonfatal()
-    test_live_round_trip()
-    print("\nAll conversation memory tests passed.")

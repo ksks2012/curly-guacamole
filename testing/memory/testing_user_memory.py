@@ -11,7 +11,7 @@ Run:
 
 from __future__ import annotations
 
-import sys
+import pytest
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -399,7 +399,6 @@ class TestRAGEngineDocIds(unittest.TestCase):
     def test_engine_passes_doc_ids_to_memory(self):
         """Engine should collect doc_ids from retrieved chunks and pass to add_turn."""
         from rag.engine import RAGEngine
-        from langchain_core.documents import Document
 
         mock_llm      = MagicMock()
         mock_llm.invoke.return_value = MagicMock(content="Test answer")
@@ -407,16 +406,18 @@ class TestRAGEngineDocIds(unittest.TestCase):
         mock_config.query_expansion_enabled = False
 
         # Set up two docs with doc_id metadata
-        doc1 = Document(page_content="chunk1", metadata={"doc_id": "doc-abc", "chunk_id": "c1", "title": "t1"})
-        doc2 = Document(page_content="chunk2", metadata={"doc_id": "doc-xyz", "chunk_id": "c2", "title": "t2"})
+        from rag.retrieval.base import RetrievalResult
+        result1 = RetrievalResult(content="chunk1", score=0.9, source="document",
+                                   metadata={"doc_id": "doc-abc", "chunk_id": "c1", "title": "t1"})
+        result2 = RetrievalResult(content="chunk2", score=0.8, source="document",
+                                   metadata={"doc_id": "doc-xyz", "chunk_id": "c2", "title": "t2"})
 
         mock_retriever = MagicMock()
-        mock_retriever.invoke.return_value = [doc1, doc2]
-        mock_get_retriever = MagicMock(return_value=mock_retriever)
+        mock_retriever.search = MagicMock(return_value=[result1, result2])
 
         engine = RAGEngine(
             llm=mock_llm,
-            get_retriever=mock_get_retriever,
+            retriever=mock_retriever,
             reranker=None,
             config=mock_config,
         )
@@ -437,7 +438,7 @@ class TestRAGEngineDocIds(unittest.TestCase):
 # Live test (skipped by default)
 # ===========================================================================
 
-@unittest.skipUnless("--live" in sys.argv, "Skipped (pass --live to run)")
+@pytest.mark.integration
 class TestUserMemoryLive(unittest.TestCase):
 
     def test_full_pipeline_live(self):
@@ -464,7 +465,4 @@ class TestUserMemoryLive(unittest.TestCase):
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # Strip our custom flags so unittest doesn't choke on them
-    sys.argv = [a for a in sys.argv if a not in ("--live", "--no-live")]
-    unittest.main(verbosity=2)
+

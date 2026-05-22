@@ -18,10 +18,6 @@ Tests all pipeline components without a real embedding server or LLM:
 
 from __future__ import annotations
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from unittest.mock import MagicMock
 
 from rag.retrieval.base import RetrievalResult
@@ -410,51 +406,4 @@ def test_rebuild_unified_uses_rrf():
     print("test_rebuild_unified_uses_rrf: OK")
 
 
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    tests = [
-        test_context_init,
-        test_context_final_uses_candidates_when_no_results,
-        test_context_final_prefers_results,
-        test_step_protocol_conformance,
-        test_query_expansion_appends_queries,
-        test_query_expansion_skip_flag,
-        test_query_expansion_graceful_failure,
-        test_retrieve_step_one_query,
-        test_retrieve_step_multiple_queries,
-        test_retrieve_step_error_resilience,
-        test_deduplicate_step_basic,
-        test_rrf_step_formula,
-        test_rrf_step_cross_list_dedup,
-        test_rrf_step_weight_imbalance,
-        test_rrf_step_weight_auto_padding,
-        test_reranker_step,
-        test_pipeline_threads_context,
-        test_pipeline_step_names,
-        test_pipeline_skip_expansion,
-        test_document_pipeline_factory,
-        test_document_pipeline_factory_with_rrf,
-        test_code_pipeline_factory,
-        test_unified_pipeline_factory,
-        test_ragengine_auto_wraps_bare_retriever,
-        test_ragengine_uses_pipeline_directly,
-        test_doc_pipeline_is_retrieval_pipeline,
-        test_rebuild_unified_uses_rrf,
-    ]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-        except Exception as exc:
-            print(f"{t.__name__}: FAIL — {exc}")
-            import traceback; traceback.print_exc()
-            failed += 1
-    print()
-    if failed:
-        print(f"FAIL ({failed}/{len(tests)} tests failed)")
-        sys.exit(1)
-    else:
-        print("PASS")

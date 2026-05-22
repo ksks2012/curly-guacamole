@@ -12,10 +12,6 @@ Tests the full pipeline without a real embedding server or LLM:
 
 from __future__ import annotations
 
-import sys
-import os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
 from dataclasses import dataclass, field
 from typing import Literal
 from unittest.mock import MagicMock, patch
@@ -159,12 +155,12 @@ def test_engine_reranker_applied():
 
     reranker = MagicMock()
     from langchain_core.documents import Document
-    # Reranker returns only the "high" doc
-    reranker.rerank.return_value = [Document(page_content="high", metadata={"chunk_id": "b"})]
+    # Reranker returns (Document, score) tuples — matches rerank_with_scores() API
+    reranker.rerank_with_scores.return_value = [(Document(page_content="high", metadata={"chunk_id": "b"}), 0.9)]
 
     engine = _make_engine(mock, reranker=reranker)
     engine.answer("q", k=1, fetch_k=5)
-    reranker.rerank.assert_called_once()
+    reranker.rerank_with_scores.assert_called_once()
     print("test_engine_reranker_applied: OK")
 
 
@@ -252,36 +248,3 @@ def test_answer_unified_restores_retriever():
     assert len(unified_ret.calls) == 1
     print("test_answer_unified_restores_retriever: OK")
 
-
-# ---------------------------------------------------------------------------
-# Runner
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    tests = [
-        test_engine_uses_retriever_search,
-        test_engine_deduplicates,
-        test_engine_passes_filters,
-        test_engine_doc_id_shortcut,
-        test_engine_code_source_tag,
-        test_engine_reranker_applied,
-        test_protocol_conformance_mock,
-        test_document_retriever_is_protocol,
-        test_hybrid_is_protocol,
-        test_attach_code_retriever_rebuilds_unified,
-        test_answer_unified_restores_retriever,
-    ]
-    failed = 0
-    for t in tests:
-        try:
-            t()
-        except Exception as exc:
-            print(f"{t.__name__}: FAIL — {exc}")
-            import traceback; traceback.print_exc()
-            failed += 1
-    print()
-    if failed:
-        print(f"FAIL ({failed}/{len(tests)} tests failed)")
-        sys.exit(1)
-    else:
-        print("PASS")
