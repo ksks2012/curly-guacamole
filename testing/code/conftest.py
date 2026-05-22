@@ -1,10 +1,6 @@
-"""pytest configuration and shared fixtures for testing/code/.
+"""Shared fixtures for testing/code/.
 
---integration flag
-------------------
-Pass ``pytest --integration`` to include tests that depend on the local git
-repository, the real filesystem, or any network resource.  Without the flag,
-all tests marked ``@pytest.mark.integration`` are skipped automatically.
+The --integration flag and skip logic live in the parent testing/conftest.py.
 """
 
 from __future__ import annotations
@@ -17,37 +13,6 @@ import pytest
 
 # Make workspace root importable without sys.path.insert in each test file.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-
-# ---------------------------------------------------------------------------
-# CLI option + marker
-# ---------------------------------------------------------------------------
-
-def pytest_addoption(parser: pytest.Parser) -> None:
-    parser.addoption(
-        "--integration",
-        action="store_true",
-        default=False,
-        help="Run integration tests (require git repo, filesystem, or network).",
-    )
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line(
-        "markers",
-        "integration: depends on git, filesystem, or network (skipped by default).",
-    )
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config,
-    items: list[pytest.Item],
-) -> None:
-    if not config.getoption("--integration"):
-        skip = pytest.mark.skip(reason="pass --integration to run")
-        for item in items:
-            if "integration" in item.keywords:
-                item.add_marker(skip)
 
 
 # ---------------------------------------------------------------------------
