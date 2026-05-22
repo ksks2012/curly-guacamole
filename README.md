@@ -25,6 +25,21 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Topic clustering** (B.3) — K-Means over chunk embeddings with LLM-generated cluster labels; assigns `topic_*` tags to every chunk
 - **Cross-document linking** (B.4) — cosine similarity linking at chunk level (`related_chunks`) and page level (`related_pages`); stored in metadata so retrieval results carry "see also" links at zero query-time cost
 
+### Repository Intelligence Layer (Stage GCR)
+
+#### GCR1 — Repository Foundation
+- **Repository scanner** (GCR1.1) — walks directory tree, produces a hash-stamped `RepoManifest`; incremental diff (`ManifestDiff`) identifies added / modified / deleted files between scans
+- **AST-aware code parsing** (GCR1.2) — `libcst`-based Python parser extracts `module`, `class`, `function`, and `method` chunks with exact line boundaries and SHA-256 content hashes; qualified names handle nested classes / methods
+- **Symbol registry** (GCR1.3) — in-memory `SymbolStore` indexes all named symbols by file, type, visibility (`public` / `private` / `dunder`), and parent; serialisable to JSON for incremental runs
+- **Multi-resolution code indexing** (GCR1.4) — four Chroma collections at increasing granularity (`repo`, `file`, `symbol`, `block`); incremental upsert compares `content_hash` to skip unchanged symbols; per-repo pruning removes stale documents
+- **Git snapshot system** (GCR1.5) — `GitReader` wraps subprocess git to produce `CommitInfo` and `FileSnapshot` objects without external git library dependencies; `SnapshotStore` accumulates file history for temporal analysis
+
+#### GCR2 — Symbol & Git Knowledge Graph
+- **Dependency graph** (GCR2.1) — `libcst`-based `_EdgeCollector` extracts `IMPORTS`, `EXTENDS`, `IMPLEMENTS`, and `CALLS` edges; stored in a SQLite `GraphStore` with idempotent upserts and per-repo / per-file delete helpers
+- **Symbol evolution tracking** (GCR2.2) — `build_symbol_evolutions()` processes chronologically ordered `FileSnapshot` objects to produce `SymbolEvolution` records tracking `introduced_in`, `modified_in`, and `deleted_in` commit hashes per symbol
+- **Diff semantic analysis** (GCR2.3) — `DiffAnalyzer` sends the unified git diff for a symbol to an LLM and stores a one-line `change_summary` on each `SymbolEvolution`; gracefully degrades to `""` on empty input or LLM error
+- **Commit semantic indexing** (GCR2.4) — `CommitAnalyzer` derives `affected_symbols` from evolution records and generates an LLM summary; `CommitIndexer` stores `CommitRecord` objects in Chroma for semantic queries like *"When did reranking get introduced?"*; incremental via `content_hash`, with per-repo pruning
+
 ### Memory System (Stage C)
 - **Conversation memory** (C.1) — persistent short/medium-term memory per session: tracks `active_project`, rolling `current_topics`, and `recent_questions`; automatically injected into every RAG prompt and updated after each answer
 - **Topic extraction** — LLM extracts 1-5 topic tags from each Q-A turn to keep `current_topics` up to date
@@ -402,6 +417,19 @@ archived = client.list_research_sessions(archived=True)
 │   │   ├── user_memory.py        # UserMemoryManager — EMA-weighted long-term interest profile (C.2)
 │   │   ├── timeline.py           # KnowledgeTimeline — daily activity log with topic + doc tracking (C.3)
 │   │   └── research_session.py   # ResearchSessionManager — named sessions, queries, notes lifecycle (C.4)
+│   ├── code/
+│   │   ├── schema.py             # Domain models: RepoFile, RepoManifest, ManifestDiff, CommitInfo, FileSnapshot, SymbolEvolution, CommitRecord
+│   │   ├── scanner.py            # RepoScanner — directory walk, manifest generation, incremental diff (GCR1.1)
+│   │   ├── ast_parser.py         # PythonASTParser — libcst-based chunk + edge extraction (GCR1.2)
+│   │   ├── symbol_store.py       # SymbolStore — in-memory symbol registry with JSON persistence (GCR1.3)
+│   │   ├── indexer.py            # CodeIndexer — four-level Chroma indexing (repo/file/symbol/block) (GCR1.4)
+│   │   ├── git_reader.py         # GitReader — git subprocess wrapper; CommitInfo + FileSnapshot builder (GCR1.5)
+│   │   ├── snapshot_store.py     # SnapshotStore — temporal file history accumulator (GCR1.5)
+│   │   ├── graph_store.py        # GraphStore — SQLite edge store for dependency + evolution data (GCR2.1/2.2)
+│   │   ├── evolution_builder.py  # build_symbol_evolutions() — derives SymbolEvolution from snapshots (GCR2.2)
+│   │   ├── diff_analyzer.py      # DiffAnalyzer — LLM-based one-line diff summariser (GCR2.3)
+│   │   ├── commit_analyzer.py    # CommitAnalyzer — derives affected_symbols and LLM commit summary (GCR2.4)
+│   │   └── commit_indexer.py     # CommitIndexer — Chroma storage and semantic search for commits (GCR2.4)
 │   └── retrieval/
 │       ├── bm25.py               # BM25Index + RRF fusion
 │       └── filters.py            # SearchFilter — Chroma where-clause builder
@@ -410,24 +438,49 @@ archived = client.list_research_sessions(archived=True)
 │   ├── file_processor.py         # PDF chunking, YAML / JSON / CSV helpers
 │   └── logger.py                 # AppLogger — centralised logging setup
 ├── testing/
-│   ├── testing_extractor.py        # B.1 knowledge extraction unit tests
-│   ├── testing_qa.py               # B.2 QA generation unit tests
-│   ├── testing_clusterer.py        # B.3 topic clustering unit tests
-│   ├── testing_linker.py           # B.4 cross-doc linking unit tests
-│   ├── testing_memory.py           # C.1 conversation memory unit tests
-│   ├── testing_user_memory.py      # C.2/C.3 user memory and timeline unit tests
-│   ├── testing_research_session.py # C.4 research session unit tests
-│   ├── testing_notion_api.py       # Notion REST API integration tests
-│   ├── testing_sync.py             # NotionSyncPipeline integration tests
-│   ├── testing_embedder.py         # NotionEmbedder unit tests
-│   ├── testing_pipeline.py         # NotionRAGClient end-to-end tests
-│   ├── testing_openrouter.py       # OpenRouterEmbeddings rate-limit + threading tests
-│   ├── testing_chunker.py          # Chunker strategy unit tests
-│   ├── testing_blocks.py           # Block-level parsing unit tests
-│   ├── testing_models.py           # Domain model unit tests
-│   ├── testing_knowledge.py        # Knowledge store integration tests
-│   ├── testing_llm_config.py       # LLM / provider config smoke tests
-│   └── testing_eval.py             # Retrieval evaluation helpers
+│   ├── code/
+│   │   ├── testing_base_chunk.py           # BaseChunk unit tests
+│   │   ├── testing_ast_parser.py           # PythonASTParser unit tests (GCR1.2)
+│   │   ├── testing_symbol_store.py         # SymbolStore unit tests (GCR1.3)
+│   │   ├── testing_code_indexer.py         # CodeIndexer unit tests (GCR1.4)
+│   │   ├── testing_collection_strategy.py  # collection strategy unit tests
+│   │   ├── testing_git_reader.py           # GitReader unit tests (GCR1.5)
+│   │   ├── testing_content_hash_diff.py    # incremental hash diff unit tests
+│   │   ├── testing_scanner.py              # RepoScanner unit tests (GCR1.1)
+│   │   ├── testing_dependency_graph.py     # GraphStore + edge extraction tests (GCR2.1)
+│   │   ├── testing_symbol_evolution.py     # SymbolEvolution builder tests (GCR2.2)
+│   │   ├── testing_diff_analysis.py        # DiffAnalyzer unit tests (GCR2.3)
+│   │   ├── testing_commit_indexing.py      # CommitAnalyzer + CommitIndexer tests (GCR2.4)
+│   │   └── testing_code_bm25.py            # code BM25 index tests
+│   ├── ingest/
+│   │   ├── testing_chunker.py              # chunker strategy tests (integration: Notion)
+│   │   ├── testing_embedder.py             # NotionEmbedder tests (integration: Notion)
+│   │   ├── testing_extractor.py            # KnowledgeExtractor unit tests (B.1)
+│   │   ├── testing_qa.py                   # QAGenerator unit tests (B.2)
+│   │   ├── testing_clusterer.py            # TopicClusterer unit tests (B.3)
+│   │   └── testing_linker.py               # CrossDocLinker unit tests (B.4)
+│   ├── knowledge/
+│   │   ├── testing_knowledge.py            # RawStore + NotionClient conversion tests
+│   │   └── testing_models.py               # domain model unit tests
+│   ├── notion/
+│   │   ├── testing_notion_api.py           # Notion REST API integration tests
+│   │   ├── testing_blocks.py               # block-level parsing tests
+│   │   ├── testing_sync.py                 # NotionSyncPipeline integration tests
+│   │   └── testing_pipeline.py             # NotionRAGClient end-to-end tests
+│   ├── memory/
+│   │   ├── testing_memory.py               # ConversationMemory unit tests (C.1)
+│   │   ├── testing_user_memory.py          # UserMemoryManager + timeline tests (C.2/C.3)
+│   │   └── testing_research_session.py     # ResearchSessionManager unit tests (C.4)
+│   ├── retrieval/
+│   │   ├── testing_base_indexer.py         # base indexer unit tests
+│   │   ├── testing_unified_engine.py       # unified retrieval engine tests
+│   │   └── testing_retrieval_pipeline.py   # end-to-end retrieval pipeline tests
+│   ├── eval/
+│   │   ├── testing_eval.py                 # retrieval evaluation helpers (integration)
+│   │   └── testing_eval_unit.py            # evaluation metric unit tests
+│   └── config/
+│       ├── testing_llm_config.py           # LLM / provider config smoke tests
+│       └── testing_openrouter.py           # OpenRouterEmbeddings rate-limit tests
 ├── data/
 │   └── uploads/                  # Uploaded files (path configurable via upload_dir)
 ├── my_db/
