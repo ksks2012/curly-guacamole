@@ -535,5 +535,103 @@ class SymbolEvolution:
         d.setdefault("change_summary", "")
         return cls(**d)
 
+
+# ---------------------------------------------------------------------------
+# CommitRecord  (GCR2.4 — Commit Semantic Indexing)
+# ---------------------------------------------------------------------------
+
+def _commit_record_id(repo_id: str, commit_hash: str) -> str:
+    """Deterministic primary key for a CommitRecord."""
+    import hashlib
+    return hashlib.sha256(f"{repo_id}|{commit_hash}".encode()).hexdigest()
+
+
+@dataclass
+class CommitRecord:
+    """Semantic index record for a single git commit.
+
+    Combines structured git metadata with an LLM-generated summary and a
+    mechanically-derived list of affected symbols.  Stored in Chroma so that
+    commits can be retrieved by semantic queries such as
+    "When did reranking get introduced?".
+
+    Attributes
+    ----------
+    commit_id         : Deterministic ID: sha256(repo_id + "|" + commit_hash).
+    repo_id           : Logical repository identifier.
+    commit_hash       : Full 40-char SHA-1 git commit hash.
+    author            : Commit author name.
+    date              : ISO-8601 UTC commit timestamp.
+    message           : Full commit message.
+    files_changed     : POSIX-relative paths touched by this commit.
+    affected_symbols  : Symbols introduced, modified, or deleted in this commit.
+                        Derived from SymbolEvolution records — no LLM needed.
+    summary           : One-sentence LLM-generated semantic summary.
+    content_hash      : SHA-256 of *summary* (or *message* when summary is empty).
+                        Used for incremental re-indexing.
+    """
+
+    commit_id:        str
+    repo_id:          str
+    commit_hash:      str
+    author:           str
+    date:             str
+    message:          str
+    files_changed:    list[str] = field(default_factory=list)
+    affected_symbols: list[str] = field(default_factory=list)
+    summary:          str       = ""
+    content_hash:     str       = ""
+
+    @property
+    def short_hash(self) -> str:
+        return self.commit_hash[:12]
+
+    def to_document(self):
+        """Return a LangChain-compatible Document for Chroma ingestion.
+
+        The page_content is a human-readable text that captures the commit's
+        semantic intent.  Lists are serialised as CSV strings in metadata
+        to satisfy Chroma's scalar-only metadata constraint.
+        """
+        from langchain_core.documents import Document
+        lines = [
+            f"commit: {self.short_hash}  date: {self.date}",
+            f"author: {self.author}",
+        ]
+        if self.affected_symbols:
+            lines.append(f"affected symbols: {', '.join(self.affected_symbols[:30])}")
+        if self.summary:
+            lines.append(f"\n{self.summary}")
+        else:
+            lines.append(f"\n{self.message.splitlines()[0][:200]}")
+        return Document(
+            page_content="\n".join(lines),
+            metadata={
+                "commit_id":        self.commit_id,
+                "commit_hash":      self.commit_hash,
+                "repo_id":          self.repo_id,
+                "author":           self.author,
+                "date":             self.date,
+                "source_type":      "commit",
+                "content_hash":     self.content_hash,
+                "affected_symbols": ",".join(self.affected_symbols),
+                "files_changed":    ",".join(self.files_changed),
+            },
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "CommitRecord":
+        d = dict(d)
+        for key in ("files_changed", "affected_symbols"):
+            if isinstance(d.get(key), str):
+                d[key] = [s for s in d[key].split(",") if s]
+        d.setdefault("summary", "")
+        d.setdefault("content_hash", "")
+        return cls(**d)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
