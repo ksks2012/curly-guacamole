@@ -2,33 +2,41 @@
 RAG Engine — answer_query pipeline.
 
 Responsibilities:
-  - Query expansion via LLM (optional)
-  - Multi-query retrieval with chunk-level deduplication
-  - Reranking (delegates to BaseReranker)
-  - Prompt construction and LLM invocation
+  - Delegates retrieval to a RetrievalPipeline (query expansion, retrieve,
+    fuse, rerank — all steps are plugin-able and swappable)
+  - Builds context blocks from RetrievalResult list
+  - Invokes LLM with RAG_PROMPT / MEMORY_AWARE_RAG_PROMPT
+  - Updates ConversationMemory after each response
 
 LocalLlamaClient holds a RAGEngine and delegates answer_query to it.
-The engine has no knowledge of embeddings, Chroma, or indexing.
+The engine has no knowledge of embeddings, Chroma, or indexing — it only
+speaks the RetrievalPipeline / BaseRetriever interfaces.
+
+Backward compatibility
+----------------------
+``RAGEngine`` still accepts either a ``RetrievalPipeline`` or any object
+satisfying the ``BaseRetriever`` Protocol in its ``retriever`` parameter.
+When a bare retriever is passed, a minimal DeduplicateStep-based pipeline
+is created automatically at first use.
 """
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Callable
-
-from langchain_core.documents import Document
+from typing import TYPE_CHECKING
 
 from rag.prompt import (
     MEMORY_AWARE_RAG_PROMPT,
-    QUERY_EXPANSION_PROMPT,
     RAG_PROMPT,
 )
+from rag.retrieval.base import RetrievalResult
 from utils.logger import AppLogger
 
 if TYPE_CHECKING:
     from langchain_openai import ChatOpenAI
     from rag.memory.manager import ConversationMemory
     from rag.reranker import BaseReranker
+    from rag.retrieval.base import BaseRetriever
+    from rag.retrieval.pipeline import RetrievalPipeline
     from utils.config import AppConfig
 
 log = AppLogger.get(__name__)
@@ -39,50 +47,52 @@ class RAGEngine:
     Encapsulates the full retrieval-augmented generation pipeline.
 
     Args:
-        llm           : ChatOpenAI instance used for expansion and generation.
-        get_retriever : Callable(k, fetch_k, doc_id) → LangChain retriever.
-                        Provided by LocalLlamaClient so the engine stays
-                        decoupled from the Chroma store.
-        reranker      : BaseReranker or None.
-        config        : AppConfig — reads query_expansion_enabled/n.
-        memory        : ConversationMemory (optional). When supplied, injects
-                        a context block into the prompt and records every
-                        Q-A turn after the response is returned.
+        llm       : ChatOpenAI instance used for generation.
+        retriever : A ``RetrievalPipeline`` **or** any ``BaseRetriever``-
+                    compatible object.  When a bare retriever is supplied a
+                    default DeduplicateStep pipeline is built automatically.
+        reranker  : Kept for backward compatibility; ignored when a full
+                    ``RetrievalPipeline`` is supplied (the pipeline owns
+                    its own RerankerStep if desired).
+        config    : AppConfig — reads query_expansion_enabled/n.
+        memory    : ConversationMemory (optional).
     """
 
     def __init__(
         self,
         llm: "ChatOpenAI",
-        get_retriever: Callable,
+        retriever: "RetrievalPipeline | BaseRetriever",
         reranker: "BaseReranker | None",
         config: "AppConfig",
         memory: "ConversationMemory | None" = None,
     ) -> None:
-        self.llm = llm
-        self.get_retriever = get_retriever
-        self.reranker = reranker
-        self.config = config
-        self.memory = memory
+        self.llm      = llm
+        self.retriever = retriever   # RetrievalPipeline or bare BaseRetriever
+        self.reranker  = reranker
+        self.config    = config
+        self.memory    = memory
+        self._pipeline: "RetrievalPipeline | None" = None   # lazily resolved
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    def _resolve_pipeline(self) -> "RetrievalPipeline":
+        """Return the active RetrievalPipeline, building one if needed."""
+        from rag.retrieval.pipeline import RetrievalPipeline
 
-    def _expand_query(self, query: str, n: int) -> list[str]:
-        """Return n alternative phrasings of query.
+        if isinstance(self.retriever, RetrievalPipeline):
+            return self.retriever
 
-        Falls back to an empty list so the caller always gets a valid list.
-        """
-        prompt = QUERY_EXPANSION_PROMPT.format(question=query, n=n)
-        try:
-            response = self.llm.invoke(prompt)
-            raw = response.content if hasattr(response, "content") else str(response)
-            expanded = json.loads(raw.strip())
-            if isinstance(expanded, list):
-                return [str(q) for q in expanded]
-        except Exception as e:
-            log.warning("query_expansion failed, using original query only: %s", e)
-        return []
+        # Bare BaseRetriever — wrap in a minimal pipeline (build once, cache)
+        if self._pipeline is None or getattr(self._pipeline, "_bare_source", None) is not self.retriever:
+            from rag.retrieval.pipeline import PipelineBuilder
+            use_expansion = self.config.query_expansion_enabled
+            b = PipelineBuilder(self.retriever, name="engine_auto")
+            if use_expansion:
+                b.with_expansion(self.llm, n=self.config.query_expansion_n)
+            b.with_deduplicate()
+            if self.reranker:
+                b.with_reranker(self.reranker)
+            self._pipeline = b.build()
+            self._pipeline._bare_source = self.retriever   # type: ignore[attr-defined]
+        return self._pipeline
 
     # ------------------------------------------------------------------
     # Public interface
@@ -95,78 +105,97 @@ class RAGEngine:
         fetch_k: int = 20,
         doc_id: str | None = None,
         expand_query: bool | None = None,
+        filters: dict | None = None,
     ):
         """Run the full RAG pipeline and return the LLM response.
 
-        Pipeline:
-          [optional] query expansion  → N extra phrasings via LLM
+        Pipeline steps are defined by the active RetrievalPipeline:
+          [optional] QueryExpansionStep  → extra phrasings
            ↓
-          vector search per phrasing  (fetch_k candidates each, via MMR)
+          RetrieveStep(s)               → per-query search
            ↓
-          de-duplicate by chunk_id
+          DeduplicateStep or RRFStep    → fuse + dedup
            ↓
-          reranker                    (narrows down to k docs when enabled)
+          [optional] RerankerStep       → cross-encoder rerank
            ↓
           LLM generation
 
         Args:
             query        : user question.
-            k            : number of docs passed to the LLM.
-            fetch_k      : MMR candidate pool size per query.
-            doc_id       : optional metadata filter for retrieval.
+            k            : number of results passed to the LLM.
+            fetch_k      : candidate pool size fetched per query phrasing.
+            doc_id       : convenience shortcut — adds ``{"doc_id": doc_id}`` to
+                           *filters* when supplied and *filters* is None.
             expand_query : per-call override for config.query_expansion_enabled.
+                           Only effective when using a bare BaseRetriever (not a
+                           pre-built RetrievalPipeline).
+            filters      : raw Chroma ``where`` dict forwarded to all retrieve steps.
         """
-        use_expansion = (
-            expand_query
-            if expand_query is not None
-            else self.config.query_expansion_enabled
+        # Build filters — doc_id is a convenience shortcut
+        active_filters = filters
+        if active_filters is None and doc_id is not None:
+            active_filters = {"doc_id": doc_id}
+
+        # Per-call expansion override only applies to auto-built pipelines.
+        # Pre-built RetrievalPipelines define their own expansion step.
+        skip_expansion = False
+        from rag.retrieval.pipeline import RetrievalPipeline as _RP
+        if not isinstance(self.retriever, _RP):
+            use_expansion = (
+                expand_query
+                if expand_query is not None
+                else self.config.query_expansion_enabled
+            )
+            skip_expansion = not use_expansion
+
+        pipeline = self._resolve_pipeline()
+        results = pipeline.run(
+            query,
+            top_k=k,
+            fetch_k=fetch_k,
+            filters=active_filters,
+            skip_expansion=skip_expansion,
         )
+        log.info("Pipeline %r returned %d results", pipeline.name, len(results))
 
-        if use_expansion:
-            extra_queries = self._expand_query(query, n=self.config.query_expansion_n)
-            log.info("Query expansion: %d extra queries", len(extra_queries))
-        else:
-            extra_queries = []
+        results = self._build_context_and_generate(query, results)
+        return results
 
-        all_queries = [query] + extra_queries
-
-        # Retrieve candidates for every phrasing and de-duplicate by chunk_id
-        seen_ids: set = set()
-        candidates: list[Document] = []
-        retriever = self.get_retriever(k=fetch_k, fetch_k=fetch_k, doc_id=doc_id)
-        for q in all_queries:
-            for doc in retriever.invoke(q):
-                chunk_id = doc.metadata.get("chunk_id", id(doc))
-                if chunk_id not in seen_ids:
-                    seen_ids.add(chunk_id)
-                    candidates.append(doc)
-
-        log.info("Candidates after dedup: %d", len(candidates))
-
-        # Rerank then keep top k
-        if self.reranker is not None:
-            docs = self.reranker.rerank(query, candidates, top_k=k)
-        else:
-            docs = candidates[:k]
-
+    def _build_context_and_generate(self, query: str, results: list[RetrievalResult]):
+        """Build context blocks, construct prompt, invoke LLM, update memory."""
         # Build context blocks with source tags so the LLM can cite them.
-        # Tag format depends on document origin:
-        #   notion  → [<title> / <section>]
-        #   pdf     → [page <n>, <filename>]
-        #   others  → [<title>] or [<filename>]
+        # Tag format depends on result origin and metadata:
+        #   document/notion → [<title> / <section>]
+        #   document/pdf    → [page <n>, <filename>]
+        #   code/symbol     → [<file_path> :: <symbol_name>]
+        #   code/block      → [<file_path>:<start_line>-<end_line>]
+        #   others          → [<title>] or [<filename>]
         context_blocks = []
-        for doc in docs:
-            meta = doc.metadata
-            dtype = meta.get("document_type", "")
-            if dtype == "notion":
-                title   = meta.get("title", "Notion")
-                section = meta.get("section", "")
-                tag = f"[{title} / {section}]" if section else f"[{title}]"
+        for result in results:
+            meta  = result.metadata
+            src   = result.source
+            if src == "code":
+                file_path   = meta.get("file_path", "unknown")
+                symbol_name = meta.get("symbol_name") or meta.get("name")
+                start       = meta.get("start_line")
+                end         = meta.get("end_line")
+                if symbol_name:
+                    tag = f"[{file_path} :: {symbol_name}]"
+                elif start is not None:
+                    tag = f"[{file_path}:{start}-{end}]"
+                else:
+                    tag = f"[{file_path}]"
             else:
-                pg   = meta.get("page")
-                name = meta.get("filename") or meta.get("title", "unknown")
-                tag  = f"[page {pg + 1}, {name}]" if pg is not None else f"[{name}]"
-            context_blocks.append(f"{tag}\n{doc.page_content}")
+                dtype = meta.get("document_type", "")
+                if dtype == "notion":
+                    title   = meta.get("title", "Notion")
+                    section = meta.get("section", "")
+                    tag = f"[{title} / {section}]" if section else f"[{title}]"
+                else:
+                    pg   = meta.get("page")
+                    name = meta.get("filename") or meta.get("title", "unknown")
+                    tag  = f"[page {pg + 1}, {name}]" if pg is not None else f"[{name}]"
+            context_blocks.append(f"{tag}\n{result.content}")
         context = "\n\n".join(context_blocks)
 
         # Build prompt — inject memory context when available
@@ -196,12 +225,11 @@ class RAGEngine:
                     if hasattr(response, "content")
                     else str(response)
                 )
-                # Collect unique doc_ids from retrieved chunks (for C.3 timeline)
                 doc_ids = list(
                     dict.fromkeys(
-                        doc.metadata.get("doc_id", "")
-                        for doc in docs
-                        if doc.metadata.get("doc_id")
+                        r.metadata.get("doc_id", "")
+                        for r in results
+                        if r.metadata.get("doc_id")
                     )
                 )
                 self.memory.add_turn(query, answer_text, doc_ids=doc_ids)

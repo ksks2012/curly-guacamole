@@ -22,7 +22,10 @@ from rag.memory.user_memory      import UserMemoryManager
 from rag.memory.timeline         import KnowledgeTimeline
 from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
+from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.filters import SearchFilter
+from rag.retrieval.hybrid_retriever import HybridRetriever
+from rag.retrieval.pipeline import PipelineBuilder
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
@@ -31,7 +34,13 @@ log = AppLogger.get(__name__)
 class LocalLlamaClient:
     """Wires a local embedding server, Chroma vector store, and local LLM.
 
-    All retrieval operations delegate to ``self.searcher``.
+    Retrieval is unified under the BaseRetriever Protocol:
+      self.doc_retriever    — DocumentRetriever wrapping self.searcher
+      self.code_retriever   — CodeRetriever (set externally when CodeIndexer
+                              is available; None until then)
+      self.unified_retriever — HybridRetriever([doc, code]) when both backends
+                              are available; falls back to doc_retriever only.
+
     All knowledge/QA operations delegate to ``self.knowledge``.
     """
 
@@ -87,14 +96,39 @@ class LocalLlamaClient:
         self.reranker = RerankerFactory.build(config, llm=self.llm)
         log.info("Reranker: %s", type(self.reranker).__name__ if self.reranker else "disabled")
 
+        self.searcher = Searcher(db=self.db, reranker=self.reranker)
+
+        # ── Unified Retrieval Layer ────────────────────────────────────────
+        # doc_retriever is always available after __init__.
+        # code_retriever starts as None; call attach_code_retriever() after
+        # a CodeIndexer is ready to enable cross-domain unified search.
+        self.doc_retriever: DocumentRetriever = DocumentRetriever(
+            self.searcher,
+            use_hybrid=False,   # matches previous engine default
+            reranker=self.reranker,
+        )
+        self.code_retriever = None   # set via attach_code_retriever()
+
+        # Build canonical pipelines via PipelineBuilder.
+        # doc_pipeline is always available; unified_pipeline is rebuilt when
+        # a CodeRetriever is attached.
+        self.doc_pipeline = PipelineBuilder.document_pipeline(
+            self.doc_retriever,
+            reranker=self.reranker,
+        )
+        self.unified_pipeline = self.doc_pipeline   # updated by _rebuild_unified()
+
+        # Convenience aliases — keep unified_retriever/doc_retriever for callers
+        # that accessed them directly in Step 1.3 tests.
+        self.unified_retriever = self.doc_retriever  # updated by _rebuild_unified()
+
+        # RAGEngine now receives the doc_pipeline by default.
         self.engine = RAGEngine(
             llm=self.llm,
-            get_retriever=self.get_retriever,
+            retriever=self.doc_pipeline,
             reranker=self.reranker,
             config=config,
         )
-
-        self.searcher = Searcher(db=self.db, reranker=self.reranker)
 
         _qa_collection = (config.setup_rag_collection or "rag_collection") + "_qa"
         _qa_db = Chroma(
@@ -139,6 +173,44 @@ class LocalLlamaClient:
         self.engine.memory = self.memory
 
         log.info("LocalLlamaClient ready")
+
+    # ------------------------------------------------------------------
+    # Unified Retrieval Layer helpers
+    # ------------------------------------------------------------------
+
+    def attach_code_retriever(self, code_indexer, *, level: str = "symbol") -> None:
+        """Attach a CodeRetriever backed by *code_indexer* and rebuild pipelines.
+
+        Call this after a CodeIndexer has been initialised to enable cross-domain
+        hybrid search via answer_unified().
+
+        Args:
+            code_indexer : An initialised ``rag.code.indexer.CodeIndexer``.
+            level        : Chroma collection level: repo / file / symbol / block.
+        """
+        from rag.retrieval.code_retriever import CodeRetriever
+        self.code_retriever = CodeRetriever(
+            code_indexer,
+            level=level,
+            reranker=self.reranker,
+        )
+        self._rebuild_unified()
+        log.info("CodeRetriever attached (level=%s); unified pipeline updated", level)
+
+    def _rebuild_unified(self) -> None:
+        """Rebuild unified_pipeline (and alias unified_retriever) after code_retriever changes."""
+        if self.code_retriever is not None:
+            self.unified_retriever = HybridRetriever(
+                [self.doc_retriever, self.code_retriever],
+                reranker=self.reranker,
+            )
+            self.unified_pipeline = PipelineBuilder.unified_pipeline(
+                [self.doc_retriever, self.code_retriever],
+                reranker=self.reranker,
+            )
+        else:
+            self.unified_retriever = self.doc_retriever
+            self.unified_pipeline  = self.doc_pipeline
 
     # ------------------------------------------------------------------
     # Compatibility shims — expose subsystem internals callers rely on
@@ -396,9 +468,36 @@ class LocalLlamaClient:
         doc_id: str | None = None,
         expand_query: bool | None = None,
     ):
+        """Answer using the document retrieval pipeline (default)."""
         return self.engine.answer(
             query, k=k, fetch_k=fetch_k, doc_id=doc_id, expand_query=expand_query
         )
+
+    def answer_unified(
+        self,
+        query: str,
+        k: int = 5,
+        fetch_k: int = 20,
+        expand_query: bool | None = None,
+        filters: dict | None = None,
+    ):
+        """Answer using the unified pipeline (document + code when available).
+
+        Unlike answer_query, this method does NOT accept doc_id because the
+        unified pipeline spans multiple backends.  Use the *filters* parameter
+        to pass a raw Chroma where-dict for document-side filtering.
+        """
+        prev = self.engine.retriever
+        self.engine.retriever = self.unified_pipeline
+        self.engine._pipeline = None   # clear auto-built pipeline cache
+        try:
+            return self.engine.answer(
+                query, k=k, fetch_k=fetch_k, expand_query=expand_query,
+                filters=filters,
+            )
+        finally:
+            self.engine.retriever = prev
+            self.engine._pipeline = None
 
     # ------------------------------------------------------------------
     # Indexing

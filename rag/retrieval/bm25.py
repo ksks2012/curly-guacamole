@@ -19,6 +19,7 @@ prose, code identifiers, numbers, and CJK is treated as full characters
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from langchain_core.documents import Document
@@ -80,16 +81,34 @@ def _match(metadata: dict, where: dict) -> bool:
 class BM25Index:
     """In-memory BM25 index over a corpus of LangChain ``Document`` objects.
 
+    Parameters
+    ----------
+    tokenizer : Callable that maps a string to a list of tokens.  Defaults to
+                ``_tokenize`` (whitespace + CJK-punctuation split, lowercased).
+                Pass ``code_tokenize`` from ``rag.code.tokenizer`` to get
+                symbol-aware sub-word splitting for code collections.
+
     Usage::
 
+        # prose / documents
         idx = BM25Index()
-        idx.build(docs)          # (re)build from a list[Document]
+        idx.build(docs)
         results = idx.search(query, k=20, where={"workspace": {"$eq": "work"}})
+
+        # code collections
+        from rag.code.tokenizer import code_tokenize
+        code_idx = BM25Index(tokenizer=code_tokenize)
+        code_idx.build(symbol_docs)
+        results = code_idx.search("RAGEngine.retrieve", k=10)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        tokenizer: Callable[[str], list[str]] | None = None,
+    ) -> None:
         self._docs: list[Document] = []
         self._bm25 = None  # BM25Okapi instance, None until build() called
+        self._tokenizer: Callable[[str], list[str]] = tokenizer if tokenizer is not None else _tokenize
 
     # ------------------------------------------------------------------
     # Build
@@ -114,7 +133,7 @@ class BM25Index:
             log.debug("BM25Index.build: empty corpus — index cleared")
             return
 
-        tokenized = [_tokenize(doc.page_content) for doc in self._docs]
+        tokenized = [self._tokenizer(doc.page_content) for doc in self._docs]
         self._bm25 = BM25Okapi(tokenized)
         log.debug("BM25Index.build: %d documents indexed", len(self._docs))
 
@@ -156,7 +175,7 @@ class BM25Index:
         if not indices:
             return []
 
-        tokens = _tokenize(query)
+        tokens = self._tokenizer(query)
         all_scores = self._bm25.get_scores(tokens)
 
         ranked = sorted(

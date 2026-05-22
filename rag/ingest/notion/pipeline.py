@@ -237,32 +237,11 @@ class NotionRAGClient:
         sf = self._notion_filter(workspace_filter)
         where = sf.to_chroma() if sf and not sf.is_empty() else None
 
-        use_expansion = (
-            expand_query
-            if expand_query is not None
-            else self._config.query_expansion_enabled
-        )
-
-        # Collect candidates via filtered vector search.
-        search_kwargs: dict = {"k": fetch_k, "fetch_k": fetch_k}
-        if where:
-            search_kwargs["filter"] = where
-        retriever = self._llm_client.db.as_retriever(
-            search_type="mmr",
-            search_kwargs=search_kwargs,
-        )
-
-        from rag.engine import RAGEngine
-        engine = RAGEngine(
-            llm=self._llm_client.llm,
-            get_retriever=lambda **_: retriever,
-            reranker=self._llm_client.reranker,
-            config=self._config,
-        )
-        response = engine.answer(
+        response = self._llm_client.engine.answer(
             query=question,
             k=k,
             fetch_k=fetch_k,
+            filters=where,
             expand_query=expand_query,
         )
         return response.content if hasattr(response, "content") else str(response)
