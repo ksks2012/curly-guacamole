@@ -210,6 +210,7 @@ class GitReader:
 
         content_hash = _sha256(content)
         symbols: list[str] = []
+        symbol_hashes: dict[str, str] = {}
 
         if parser is not None and file_path.endswith(".py"):
             try:
@@ -219,6 +220,12 @@ class GitReader:
                     c.name for c in chunks
                     if c.chunk_type != "module"
                 ]
+                # Per-symbol content hashes enable modified_in detection in GCR2.2.
+                symbol_hashes = {
+                    c.name: c.content_hash
+                    for c in chunks
+                    if c.chunk_type != "module"
+                }
             except Exception as exc:
                 log.debug(
                     "GitReader.snapshot_file: parser error at %s@%s: %s",
@@ -232,6 +239,7 @@ class GitReader:
             file_path=file_path,
             content_hash=content_hash,
             symbols=symbols,
+            symbol_hashes=symbol_hashes,
         )
 
     def snapshot_commit(

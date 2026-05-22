@@ -393,7 +393,8 @@ class FileSnapshot:
     commit_hash:  str
     file_path:    str
     content_hash: str
-    symbols:      list[str] = field(default_factory=list)
+    symbols:      list[str]       = field(default_factory=list)
+    symbol_hashes: dict[str, str] = field(default_factory=dict)
 
     @property
     def short_hash(self) -> str:
@@ -425,6 +426,9 @@ class FileSnapshot:
         if isinstance(d.get("symbols"), str):
             # Backwards-compat: CSV → list
             d["symbols"] = [s for s in d["symbols"].split(",") if s]
+        # Backwards-compat: older snapshots without symbol_hashes
+        if "symbol_hashes" not in d:
+            d["symbol_hashes"] = {}
         return cls(**d)
 
 
@@ -474,8 +478,59 @@ class DependencyEdge:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# SymbolEvolution  (GCR2.2 — Symbol Evolution Tracking)
 # ---------------------------------------------------------------------------
+
+def _evolution_id(repo_id: str, file_path: str, symbol_name: str) -> str:
+    """Deterministic primary key for a SymbolEvolution record."""
+    import hashlib
+    return hashlib.sha256(f"{repo_id}|{file_path}|{symbol_name}".encode()).hexdigest()
+
+
+@dataclass
+class SymbolEvolution:
+    """Temporal lifecycle of a single symbol across the git history of one file.
+
+    Built from a chronologically ordered sequence of ``FileSnapshot`` objects
+    by ``build_symbol_evolutions()`` in ``rag.code.evolution_builder``.
+
+    Attributes
+    ----------
+    evolution_id  : Deterministic ID: sha256(repo_id + "|" + file_path + "|" + symbol_name).
+    symbol_name   : Fully-qualified symbol name (e.g. ``"MyClass.my_method"``).
+    repo_id       : Logical repository identifier.
+    file_path     : Relative POSIX path from the repository root.
+    introduced_in : Commit hash where the symbol first appeared.  ``""`` = unknown.
+    modified_in   : Ordered list of commit hashes where the symbol body changed.
+    deleted_in    : Commit hash where the symbol last disappeared.  ``""`` = still alive.
+    renamed_from  : Previous symbol names (v1 always ``[]``; populated in GCR3).
+    """
+
+    evolution_id:  str
+    symbol_name:   str
+    repo_id:       str
+    file_path:     str
+    introduced_in: str            = ""
+    modified_in:   list[str]      = field(default_factory=list)
+    deleted_in:    str            = ""
+    renamed_from:  list[str]      = field(default_factory=list)
+
+    def is_alive(self) -> bool:
+        """Return True when the symbol has not been deleted."""
+        return self.deleted_in == ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SymbolEvolution":
+        d = dict(d)
+        # JSON may deserialise lists as strings when loaded from SQLite TEXT columns.
+        for key in ("modified_in", "renamed_from"):
+            if isinstance(d.get(key), str):
+                import json
+                d[key] = json.loads(d[key]) if d[key] else []
+        return cls(**d)
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
