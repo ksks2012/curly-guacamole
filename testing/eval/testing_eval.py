@@ -35,6 +35,8 @@ Examples
 import argparse
 import sys
 
+import pytest
+
 from utils.config import AppConfig
 from utils.logger import AppLogger
 from rag.client import LocalLlamaClient
@@ -117,6 +119,11 @@ def main() -> None:
         else:
             print()
             print(report.per_query_table(mode))
+
+
+@pytest.mark.integration
+def test_retrieval_eval():
+    main()
 
 
 if __name__ == "__main__":

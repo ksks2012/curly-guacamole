@@ -21,6 +21,7 @@ Usage:
 """
 
 import sys
+import pytest
 
 from utils.config import AppConfig
 from utils.logger import AppLogger
@@ -38,12 +39,12 @@ def _ok(msg: str) -> None:
 
 def _fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
-    sys.exit(1)
+    pytest.fail("Integration test failed")
 
 
 def _check(condition: bool, msg: str) -> None:
     if condition:
-        _ok(msg)
+        pass
     else:
         _fail(msg)
 
@@ -54,11 +55,11 @@ def _resolve_page_id(client: NotionClient, config: AppConfig) -> str:
     data_source_id = config.notion_data_source_id
     if not data_source_id:
         print("ERROR: notion_data_source_id not set — provide page_id as CLI arg")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
     batch, _ = next(iter(client.iter_data_source_pages(data_source_id)))
     if len(batch) < 2:
         print("ERROR: data source returned fewer than 2 pages")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
     page_id = batch[1]["id"]
     print(f"  auto-resolved page_id: {page_id}")
     return page_id
@@ -80,7 +81,7 @@ def main() -> None:
     token = config.notion_token
     if not token:
         print("ERROR: notion_token is not set")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
 
     client = NotionClient(token)
 
@@ -147,6 +148,11 @@ def main() -> None:
     _print_chunks(chunks)
 
     print("\nAll checks passed.")
+
+
+@pytest.mark.integration
+def test_chunker():
+    main()
 
 
 if __name__ == "__main__":

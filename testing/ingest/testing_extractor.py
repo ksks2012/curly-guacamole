@@ -8,7 +8,7 @@ Test 4: Live extraction against the real LLM server (requires running server)
 """
 
 import json
-import sys
+import pytest
 from langchain_core.documents import Document
 
 # ---------------------------------------------------------------------------
@@ -110,6 +110,7 @@ def test_enrich_mock():
 # Test 4 — live LLM extraction (skip if --no-live flag given)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_extract_one_live():
     from utils.config import AppConfig
     from rag.client import LocalLlamaClient
@@ -142,19 +143,4 @@ def test_extract_one_live():
 # Runner
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    live = "--no-live" not in sys.argv
 
-    test_extract_json()
-    test_extract_one_mock()
-    test_enrich_mock()
-
-    if live:
-        try:
-            test_extract_one_live()
-        except Exception as exc:
-            print(f"\nLive test skipped (server unavailable): {exc}")
-    else:
-        print("\nLive test skipped (--no-live)")
-
-    print("\nAll knowledge extraction tests passed.")

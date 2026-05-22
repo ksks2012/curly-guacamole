@@ -8,8 +8,7 @@ Tests 1-5 require no LLM (mock-based).
 Test 6 is live (calls the local LLM server) and is skipped with --no-live.
 """
 
-import sys
-sys.path.insert(0, ".")
+import pytest
 
 from langchain_core.documents import Document
 
@@ -134,6 +133,7 @@ def test_generate_for_docs_mock():
 # Test 7 (live): full round-trip with real LLM + Chroma
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_live():
     from utils.config import AppConfig
     from rag.client import LocalLlamaClient
@@ -163,18 +163,4 @@ def test_live():
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    test_extract_pairs_plain()
-    test_extract_pairs_fences()
-    test_extract_pairs_embedded()
-    test_qa_pair_to_document()
-    test_generate_mock()
-    test_generate_for_docs_mock()
 
-    if "--no-live" in sys.argv:
-        print("\nLive test skipped (--no-live)")
-    else:
-        print("\nRunning live test …")
-        test_live()
-
-    print("\nAll QA generation tests passed.")

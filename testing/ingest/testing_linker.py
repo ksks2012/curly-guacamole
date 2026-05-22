@@ -20,21 +20,10 @@ Live test (--no-live to skip):
 from __future__ import annotations
 
 import json
-import sys
+import pytest
 from unittest.mock import MagicMock, call
 
 import numpy as np
-
-LIVE = "--no-live" not in sys.argv
-
-
-def _ok(name: str) -> None:
-    print(f"{name}: OK")
-
-
-def _fail(name: str, err: Exception) -> None:
-    print(f"{name}: FAIL  {err}")
-    raise SystemExit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +64,6 @@ def test_cosine_matrix() -> None:
     assert abs(C[0, 0] - 1.0) < 1e-5
     assert abs(C[0, 1])       < 1e-5   # orthogonal
     assert abs(C[0, 2] - 1.0) < 1e-5   # same as X[0]
-    _ok("_cosine_matrix")
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +82,6 @@ def test_top_k_exclude_self() -> None:
     assert list(idx)    == [1, 3]
     assert abs(scores[0] - 0.90) < 1e-5
     assert abs(scores[1] - 0.70) < 1e-5
-    _ok("_top_k_exclude_self")
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +122,6 @@ def test_link_chunks_basic() -> None:
         # None of the related IDs should be from the same doc as the source
         # (we can't easily check doc_id here without more state, but length > 0 is the key assertion)
 
-    _ok("CrossDocLinker.link_chunks (basic)")
-
 
 # ---------------------------------------------------------------------------
 # Test 4 — link_chunks: no cross-doc candidates → skipped
@@ -157,7 +142,6 @@ def test_link_chunks_single_doc() -> None:
 
     assert stats.skipped == 2
     assert stats.linked  == 0
-    _ok("CrossDocLinker.link_chunks (single doc → all skipped)")
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +180,7 @@ def test_link_pages_basic() -> None:
     # All 4 chunks should have related_doc_ids
     for meta in written_metas:
         rel_docs = json.loads(meta.get("related_doc_ids", "[]"))
-        assert len(rel_docs) == 1  # each doc has exactly one other doc
-    _ok("CrossDocLinker.link_pages (basic)")
+        assert len(rel_docs) == 1  # each doc has exactly one other doc")
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +203,6 @@ def test_link_pages_single_doc() -> None:
 
     # No update should be called when there's only one doc
     db._collection.update.assert_not_called()
-    _ok("CrossDocLinker.link_pages (single doc → no-op)")
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +243,6 @@ def test_get_related_chunks() -> None:
     assert related[0]["doc_id"] == "doc_b"
     assert abs(related[0]["score"] - 0.91) < 1e-4
     assert "text of c2" in related[0]["text"]
-    _ok("CrossDocLinker.get_related_chunks")
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +271,6 @@ def test_get_related_pages() -> None:
     assert len(related) == 2
     assert related[0]["doc_id"] == "doc_b"
     assert abs(related[0]["score"] - 0.88) < 1e-4
-    _ok("CrossDocLinker.get_related_pages")
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +302,6 @@ def test_manager_delegation() -> None:
     assert mgr.get_related_chunks("c0") == [{"id": "x"}]
     assert mgr.get_related_pages("d1")  == [{"doc_id": "y"}]
 
-    _ok("KnowledgeManager.link_chunks / link_pages / get_related_*")
 
 
 # ---------------------------------------------------------------------------
@@ -350,20 +329,15 @@ def test_manager_no_linker_raises() -> None:
             _fail(f"KnowledgeManager.{method} (no linker)", Exception("expected RuntimeError"))
         except RuntimeError:
             pass
-    _ok("KnowledgeManager.* (no linker → RuntimeError)")
 
 
 # ---------------------------------------------------------------------------
 # Test 11 (live) — real Chroma round-trip
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_live_round_trip() -> None:
-    if not LIVE:
-        print("Live test skipped (--no-live)")
-        return
-
     import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from utils.config import AppConfig
     from rag.client import LocalLlamaClient
 
@@ -390,23 +364,10 @@ def test_live_round_trip() -> None:
     related_pages = client.get_related_pages(first_doc)
     print(f"get_related_pages({first_doc!r}): {related_pages}")
 
-    _ok("CrossDocLinker live round-trip")
 
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    test_cosine_matrix()
-    test_top_k_exclude_self()
-    test_link_chunks_basic()
-    test_link_chunks_single_doc()
-    test_link_pages_basic()
-    test_link_pages_single_doc()
-    test_get_related_chunks()
-    test_get_related_pages()
-    test_manager_delegation()
-    test_manager_no_linker_raises()
-    test_live_round_trip()
-    print("\nAll cross-document linking tests passed.")
+

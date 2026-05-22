@@ -50,9 +50,3 @@ def test_dataset_load():
     for q in dataset.queries:
         assert q.query, "each query must have text"
     print(f"EvalDataset: OK  ({len(dataset)} queries loaded)")
-
-
-if __name__ == "__main__":
-    test_metrics()
-    test_dataset_load()
-    print("\nAll tests passed.")

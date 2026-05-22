@@ -20,6 +20,7 @@ Usage:
 
 import socket
 import sys
+import pytest
 from urllib.parse import urlparse
 
 from utils.config import AppConfig
@@ -53,12 +54,12 @@ def _ok(msg: str) -> None:
 
 def _fail(msg: str) -> None:
     print(f"  [FAIL] {msg}")
-    sys.exit(1)
+    pytest.fail("Integration test failed")
 
 
 def _check(condition: bool, msg: str) -> None:
     if condition:
-        _ok(msg)
+        pass
     else:
         _fail(msg)
 
@@ -73,7 +74,7 @@ def main() -> None:
 
     if not token:
         print("ERROR: notion_token not set")
-        sys.exit(1)
+        pytest.fail("Integration test failed")
 
     embed_available = _embed_server_available(config.embed_base)
     if not embed_available:
@@ -230,6 +231,11 @@ def main() -> None:
                f"source_id {sid[:8]} belongs to a known page")
 
     print("\nAll checks passed.")
+
+
+@pytest.mark.integration
+def test_embedder():
+    main()
 
 
 if __name__ == "__main__":

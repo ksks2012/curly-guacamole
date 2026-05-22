@@ -15,25 +15,11 @@ Live test (--no-live to skip):
 
 from __future__ import annotations
 
-import sys
+import pytest
 import types
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-
-LIVE = "--no-live" not in sys.argv
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _ok(name: str) -> None:
-    print(f"{name}: OK")
-
-
-def _fail(name: str, err: Exception) -> None:
-    print(f"{name}: FAIL  {err}")
-    raise SystemExit(1)
 
 
 def _make_fake_chroma(n_docs: int = 12, dim: int = 8) -> MagicMock:
@@ -87,7 +73,6 @@ def test_to_slug() -> None:
     result = _to_slug(long)
     assert result.startswith("topic_")
     assert len(result) <= len("topic_") + 40
-    _ok("_to_slug")
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +98,6 @@ def test_fit() -> None:
         assert t in valid_topics, f"Unexpected topic: {t}"
     # LLM was called once per cluster
     assert llm.invoke.call_count == 2
-    _ok("TopicClusterer.fit")
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +116,6 @@ def test_fit_fewer_chunks() -> None:
 
     assert topic_map.n_clusters == 3
     assert topic_map.n_chunks   == 3
-    _ok("TopicClusterer.fit (fewer chunks than n_clusters)")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +151,6 @@ def test_assign() -> None:
     assert written_metas[0]["topic_id"] == "topic_rag"
     assert written_metas[0]["source"]   == "file.pdf"   # original field preserved
     assert written_metas[1]["topic_id"] == "topic_agents"
-    _ok("TopicClusterer.assign")
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +175,6 @@ def test_fit_and_assign() -> None:
 
     assert topic_map.n_clusters == 2
     assert db._collection.update.called
-    _ok("TopicClusterer.fit_and_assign")
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +197,6 @@ def test_manager_cluster_topics() -> None:
 
     mock_clusterer.fit_and_assign.assert_called_once_with(n_clusters=5, doc_id="my_doc")
     assert result is mock_topic_map
-    _ok("KnowledgeManager.cluster_topics")
 
 
 # ---------------------------------------------------------------------------
@@ -235,20 +215,16 @@ def test_manager_no_clusterer_raises() -> None:
         mgr.cluster_topics()
         _fail("KnowledgeManager.cluster_topics (no clusterer)", Exception("expected RuntimeError"))
     except RuntimeError:
-        _ok("KnowledgeManager.cluster_topics (no clusterer → RuntimeError)")
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Test 8 (live): real Chroma + real LLM round-trip
 # ---------------------------------------------------------------------------
 
+@pytest.mark.integration
 def test_live_round_trip() -> None:
-    if not LIVE:
-        print("Live test skipped (--no-live)")
-        return
-
     import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
     from utils.config import AppConfig
     from rag.client import LocalLlamaClient
 
@@ -270,20 +246,10 @@ def test_live_round_trip() -> None:
     for c_int, t_id in sorted(topic_map.cluster_labels.items()):
         count = sum(1 for v in topic_map.chunk_topics.values() if v == t_id)
         print(f"  cluster {c_int}: {t_id}  ({count} chunks)")
-    _ok("cluster_topics (live)")
 
 
 # ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    test_to_slug()
-    test_fit()
-    test_fit_fewer_chunks()
-    test_assign()
-    test_fit_and_assign()
-    test_manager_cluster_topics()
-    test_manager_no_clusterer_raises()
-    test_live_round_trip()
-    print("\nAll topic clustering tests passed.")
+
