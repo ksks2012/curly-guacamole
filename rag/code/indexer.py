@@ -1,21 +1,24 @@
 """
 GCR1.4 — Multi-resolution Code Indexing.
 
-Four Chroma collections at increasing granularity:
+Three Chroma collections managed by CodeIndexer:
 
-  repo   collection — one document per repository (architecture overview).
-  file   collection — one document per source file (module-level summary).
-  symbol collection — one document per symbol (class / function / method).
-                      Primary retrieval collection.
-  block  collection — one document per code chunk (full code text).
-                      Fine-grained reasoning collection.
+  documents  — one document per source file (module-level summary).
+               Shared with the document ingestion pipeline.
+  symbols    — one document per symbol (class / function / method).
+               Primary retrieval collection.
+  code_block — one document per code chunk (full code text).
+               Fine-grained reasoning collection.
+
+Repo-level indexing (one document per repository) is handled by
+``RepoIndex`` in ``rag.code.repo_index``.  ``CodeIndexer.index_manifest()``
+remains as a backward-compatibility shim that delegates to ``RepoIndex``.
 
 Collection naming
 -----------------
-Each collection name is ``{collection_prefix}_{level}``.  The default prefix
-is ``"code"``, giving ``code_repo``, ``code_file``, ``code_symbol``,
-``code_block``.  Override *collection_prefix* when indexing multiple
-repositories into the same Chroma store.
+Each collection name defaults to the mapping in ``_DEFAULT_COLLECTION_NAMES``
+and can be overridden per-level via the ``collection_names`` constructor
+argument.  Unknown levels fall back to ``"{prefix}_{level}"``.
 
 Incremental indexing
 ---------------------
@@ -50,33 +53,6 @@ log = AppLogger.get(__name__)
 # ---------------------------------------------------------------------------
 # Text builders — what gets embedded at each resolution level
 # ---------------------------------------------------------------------------
-
-def _repo_text(manifest: RepoManifest, module_docs: dict[str, str]) -> str:
-    """Architecture overview for a repository.
-
-    Combines repo/branch metadata, language breakdown, and per-file module
-    docstrings so the repo doc answers "what does this repository do?" queries.
-    """
-    source = manifest.source_files()
-    lang_counts: dict[str, int] = {}
-    for f in source:
-        lang_counts[f.language] = lang_counts.get(f.language, 0) + 1
-    lang_line = "  ".join(
-        f"{lang}={cnt}"
-        for lang, cnt in sorted(lang_counts.items(), key=lambda x: -x[1])
-    )
-    lines = [
-        f"repository: {manifest.repo_id}  branch: {manifest.branch}",
-        f"files: {len(manifest.files)}  source_files: {len(source)}",
-        f"languages: {lang_line}",
-        "",
-    ]
-    for f in sorted(source, key=lambda x: x.file_path):
-        doc = module_docs.get(f.file_path, "")
-        first = doc.split("\n")[0].strip() if doc else ""
-        lines.append(f"  {f.file_path}" + (f"  —  {first}" if first else ""))
-    return "\n".join(lines)
-
 
 def _file_text(
     file_path: str,
@@ -285,46 +261,18 @@ class CodeIndexer(BaseIndexer):
         manifest: RepoManifest,
         chunks: list[CodeChunk] | None = None,
     ) -> dict:
-        """Index a single repo-level document summarising the repository.
+        """Backward-compatibility shim — delegates to RepoIndex.index_manifest().
 
-        The embedded text covers branch, language breakdown, and a per-file
-        list with module docstrings — suitable for high-level architecture
-        queries like "what does this repo do?" or "where is the auth layer?".
+        Direct use of ``RepoIndex`` is preferred for new code.
 
         Parameters
         ----------
         manifest : RepoManifest from RepoScanner.
         chunks   : Optional CodeChunk list; used to extract module docstrings.
         """
-        module_docs: dict[str, str] = {}
-        if chunks:
-            for c in chunks:
-                if c.chunk_type == "module" and c.docstring:
-                    module_docs[c.file_path] = c.docstring
-
-        text = _repo_text(manifest, module_docs)
-
-        # content_hash = hash of all file hashes → changes when any file changes
-        all_hashes = "".join(
-            f.content_hash
-            for f in sorted(manifest.files.values(), key=lambda x: x.file_path)
-        )
-        repo_hash = _sha256(all_hashes)
-
-        doc = Document(
-            page_content=text,
-            metadata={
-                "repo_id":      manifest.repo_id,
-                "branch":       manifest.branch,
-                "scanned_at":   manifest.scanned_at,
-                "file_count":   len(manifest.files),
-                "source_count": len(manifest.source_files()),
-                "content_hash": repo_hash,
-            },
-        )
-        doc_id = f"{manifest.repo_id}::repo"
-        # Never prune the repo collection: each repo_id is independent.
-        return self._upsert("repo", [doc], [doc_id], prune_missing=False)
+        from rag.code.repo_index import RepoIndex  # lazy import avoids circularity
+        ri = RepoIndex(self._persist_dir, self._embed)
+        return ri.index_manifest(manifest, chunks)
 
     # ── Level: file ───────────────────────────────────────────────────────
 
@@ -604,7 +552,7 @@ class CodeIndexer(BaseIndexer):
         store: "SymbolStore | None" = None,
         **_,
     ) -> IndexStats:
-        """Index all four collections from *(manifest, chunks)*.
+        """Index file, symbol, and block collections from *(manifest, chunks)*.
 
         Equivalent to ``index_all()``.  Already incremental — only changed
         or new documents trigger embedding generation.
