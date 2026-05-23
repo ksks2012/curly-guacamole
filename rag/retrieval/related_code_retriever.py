@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 
 
 _ALLOWED_EDGE_TYPES = frozenset({"CALLS", "EXTENDS", "IMPLEMENTS", "IMPORTS"})
+_EDGE_WEIGHTS = {
+    "CALLS": 0.95,
+    "EXTENDS": 0.90,
+    "IMPLEMENTS": 0.88,
+    "IMPORTS": 0.75,
+    "NEARBY": 0.55,
+}
+_DIRECTION_BONUS = {
+    "outgoing": 0.03,
+    "incoming": 0.02,
+    "undirected": 0.01,
+}
 
 
 class RelatedCodeRetriever:
@@ -108,28 +120,35 @@ class RelatedCodeRetriever:
         file_path = str(meta.get("file_path", "")).strip()
         start_line = int(meta.get("start_line", 0) or 0)
 
-        related: list[dict] = []
-        seen_targets: set[str] = set()
+        candidates: list[dict] = []
 
         if source_id and repo_id and self._max_related > 0 and self._edge_types:
-            related.extend(
-                self._expand_graph_relations(
+            candidates.extend(
+                self._collect_graph_relations(
                     source_id=source_id,
                     repo_id=repo_id,
-                    seen_targets=seen_targets,
                 )
             )
 
         if source_id and repo_id and file_path and start_line > 0 and self._max_nearby > 0:
-            related.extend(
-                self._expand_nearby_relations(
+            candidates.extend(
+                self._collect_nearby_relations(
                     source_id=source_id,
                     repo_id=repo_id,
                     file_path=file_path,
                     start_line=start_line,
-                    seen_targets=seen_targets,
                 )
             )
+
+        related = self._rank_and_aggregate(
+            candidates,
+            source_file_path=file_path,
+            source_start_line=start_line,
+        )
+
+        total_limit = self._max_related + self._max_nearby
+        if total_limit > 0:
+            related = related[:total_limit]
 
         meta["related_blocks"] = related
         meta["related_count"] = len(related)
@@ -141,12 +160,11 @@ class RelatedCodeRetriever:
             metadata=meta,
         )
 
-    def _expand_graph_relations(
+    def _collect_graph_relations(
         self,
         *,
         source_id: str,
         repo_id: str,
-        seen_targets: set[str],
     ) -> list[dict]:
         rows: list[dict] = []
 
@@ -158,8 +176,6 @@ class RelatedCodeRetriever:
         candidates.extend(("incoming", e) for e in incoming)
 
         for direction, edge in candidates:
-            if len(rows) >= self._max_related:
-                break
             if getattr(edge, "edge_type", "") not in self._edge_types:
                 continue
 
@@ -168,36 +184,36 @@ class RelatedCodeRetriever:
                 continue
             if str(target_id).startswith("import::"):
                 continue
-            if target_id in seen_targets:
-                continue
 
             target_meta = self._fetch_block_metadata(repo_id=repo_id, target_id=target_id)
             if target_meta is None:
                 continue
 
-            seen_targets.add(target_id)
             rows.append(
                 {
                     "target_id": target_id,
                     "edge_type": edge.edge_type,
                     "direction": direction,
                     "reason": f"{edge.edge_type} relation from dependency graph",
+                    "explain": (
+                        f"{direction} {edge.edge_type.lower()} dependency"
+                    ),
                     "line_no": int(getattr(edge, "line_no", 0) or 0),
+                    "hop": 1,
                     "target_file_path": target_meta.get("file_path", ""),
                     "target_name": target_meta.get("name", ""),
                     "target_chunk_type": target_meta.get("chunk_type", ""),
                 }
             )
-        return rows
+        return rows[: self._max_related] if self._max_related > 0 else []
 
-    def _expand_nearby_relations(
+    def _collect_nearby_relations(
         self,
         *,
         source_id: str,
         repo_id: str,
         file_path: str,
         start_line: int,
-        seen_targets: set[str],
     ) -> list[dict]:
         rows: list[dict] = []
         file_blocks = self._fetch_file_blocks(repo_id=repo_id, file_path=file_path)
@@ -206,8 +222,6 @@ class RelatedCodeRetriever:
         for b in file_blocks:
             target_id = str(b.get("chunk_id", "")).strip()
             if not target_id or target_id == source_id:
-                continue
-            if target_id in seen_targets:
                 continue
             t_line = int(b.get("start_line", 0) or 0)
             if t_line <= 0:
@@ -220,20 +234,172 @@ class RelatedCodeRetriever:
             target_id = str(b.get("chunk_id", "")).strip()
             if not target_id:
                 continue
-            seen_targets.add(target_id)
             rows.append(
                 {
                     "target_id": target_id,
                     "edge_type": "NEARBY",
                     "direction": "undirected",
                     "reason": "Nearby block in the same file",
+                    "explain": "Nearby block in the same file",
                     "distance": int(dist),
+                    "hop": 1,
                     "target_file_path": b.get("file_path", ""),
                     "target_name": b.get("name", ""),
                     "target_chunk_type": b.get("chunk_type", ""),
                 }
             )
         return rows
+
+    def _rank_and_aggregate(
+        self,
+        relations: list[dict],
+        *,
+        source_file_path: str,
+        source_start_line: int,
+    ) -> list[dict]:
+        by_target: dict[str, dict] = {}
+        evidence_map: dict[str, list[dict]] = {}
+
+        for rel in relations:
+            target_id = str(rel.get("target_id", "")).strip()
+            if not target_id:
+                continue
+
+            if target_id not in by_target:
+                by_target[target_id] = dict(rel)
+                evidence_map[target_id] = [
+                    {
+                        "edge_type": rel.get("edge_type", ""),
+                        "direction": rel.get("direction", ""),
+                        "line_no": int(rel.get("line_no", 0) or 0),
+                        "distance": int(rel.get("distance", 0) or 0),
+                    }
+                ]
+                continue
+
+            # Keep one row per target_id, preserve first payload fields.
+            evidence_map[target_id].append(
+                {
+                    "edge_type": rel.get("edge_type", ""),
+                    "direction": rel.get("direction", ""),
+                    "line_no": int(rel.get("line_no", 0) or 0),
+                    "distance": int(rel.get("distance", 0) or 0),
+                }
+            )
+
+        ranked: list[dict] = []
+
+        for target_id, row in by_target.items():
+            evidence = evidence_map[target_id]
+            edge_types = [str(e.get("edge_type", "")) for e in evidence]
+            directions = [str(e.get("direction", "")) for e in evidence]
+
+            dominant_edge = self._pick_dominant_edge(edge_types)
+            dominant_direction = self._pick_dominant_direction(directions)
+
+            score = self._relation_score(
+                dominant_edge=dominant_edge,
+                dominant_direction=dominant_direction,
+                evidence_count=len(evidence),
+                source_file_path=source_file_path,
+                target_file_path=str(row.get("target_file_path", "")),
+                source_start_line=source_start_line,
+                line_no_values=[int(e.get("line_no", 0) or 0) for e in evidence],
+                distance_values=[int(e.get("distance", 0) or 0) for e in evidence],
+                hop=int(row.get("hop", 1) or 1),
+            )
+
+            explain = self._build_explain(
+                edge_type=dominant_edge,
+                direction=dominant_direction,
+                evidence_count=len(evidence),
+                source_file_path=source_file_path,
+                target_file_path=str(row.get("target_file_path", "")),
+                distance=min([d for d in [int(e.get("distance", 0) or 0) for e in evidence] if d > 0], default=0),
+            )
+
+            merged = dict(row)
+            merged["edge_type"] = dominant_edge
+            merged["direction"] = dominant_direction
+            merged["score"] = round(score, 4)
+            merged["evidence_count"] = len(evidence)
+            merged["edge_types"] = sorted({e for e in edge_types if e})
+            merged["explain"] = explain
+            # Keep backward-compatible "reason" while moving UI-facing copy to explain.
+            merged["reason"] = explain
+            ranked.append(merged)
+
+        ranked.sort(
+            key=lambda x: (
+                -float(x.get("score", 0.0)),
+                str(x.get("target_file_path", "")),
+                str(x.get("target_id", "")),
+            )
+        )
+        return ranked
+
+    @staticmethod
+    def _pick_dominant_edge(edge_types: list[str]) -> str:
+        if not edge_types:
+            return "NEARBY"
+        return max(edge_types, key=lambda t: _EDGE_WEIGHTS.get(t, 0.0))
+
+    @staticmethod
+    def _pick_dominant_direction(directions: list[str]) -> str:
+        if not directions:
+            return "undirected"
+        return max(directions, key=lambda d: _DIRECTION_BONUS.get(d, 0.0))
+
+    def _relation_score(
+        self,
+        *,
+        dominant_edge: str,
+        dominant_direction: str,
+        evidence_count: int,
+        source_file_path: str,
+        target_file_path: str,
+        source_start_line: int,
+        line_no_values: list[int],
+        distance_values: list[int],
+        hop: int,
+    ) -> float:
+        base = _EDGE_WEIGHTS.get(dominant_edge, 0.40)
+        direction_bonus = _DIRECTION_BONUS.get(dominant_direction, 0.0)
+        same_file_bonus = 0.05 if source_file_path and source_file_path == target_file_path else 0.0
+        evidence_bonus = min(0.08, 0.02 * max(0, evidence_count - 1))
+
+        hop_penalty = 0.15 * max(0, hop - 1)
+
+        nearby_penalty = 0.0
+        valid_dist = [d for d in distance_values if d > 0]
+        if valid_dist:
+            nearby_penalty = min(0.25, min(valid_dist) / 200 * 0.25)
+
+        line_penalty = 0.0
+        valid_line = [l for l in line_no_values if l > 0]
+        if source_start_line > 0 and valid_line:
+            line_penalty = min(0.08, abs(min(valid_line) - source_start_line) / 500 * 0.08)
+
+        return base + direction_bonus + same_file_bonus + evidence_bonus - hop_penalty - nearby_penalty - line_penalty
+
+    @staticmethod
+    def _build_explain(
+        *,
+        edge_type: str,
+        direction: str,
+        evidence_count: int,
+        source_file_path: str,
+        target_file_path: str,
+        distance: int,
+    ) -> str:
+        parts = [f"{direction} {edge_type.lower()} relation"]
+        if source_file_path and target_file_path and source_file_path == target_file_path:
+            parts.append("same file")
+        if edge_type == "NEARBY" and distance > 0:
+            parts.append(f"line distance={distance}")
+        if evidence_count > 1:
+            parts.append(f"evidence={evidence_count}")
+        return " | ".join(parts)
 
     # ------------------------------------------------------------------
     # Internal: block metadata lookup

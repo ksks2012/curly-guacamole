@@ -73,6 +73,8 @@ def test_response_contract_related_blocks_keys():
     assert "edge_type" in rel
     assert "direction" in rel
     assert "reason" in rel
+    assert "score" in rel
+    assert "explain" in rel
 
 
 def test_repo_ids_passthrough_to_base_retriever():
@@ -148,6 +150,7 @@ def test_relation_expansion_outgoing_and_incoming():
     rel = out[0].metadata["related_blocks"]
     assert len(rel) == 2
     assert {x["direction"] for x in rel} == {"outgoing", "incoming"}
+    assert all("explain" in x for x in rel)
 
 
 def test_skip_import_targets_and_limit_max_related():
@@ -215,3 +218,102 @@ def test_same_file_nearby_relations():
     assert len(rel) == 1
     assert rel[0]["edge_type"] == "NEARBY"
     assert rel[0]["target_id"] == "r1::a.py::function::g"
+    assert "line distance=" in rel[0]["explain"]
+
+
+def test_relations_are_ranked_by_score_descending():
+    base = MagicMock()
+    base.search.return_value = [_mk_result()]
+
+    # CALLS should rank higher than IMPORTS under fixed weights.
+    e1 = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::function::g",
+        edge_type="IMPORTS",
+        line_no=12,
+    )
+    e2 = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::function::h",
+        edge_type="CALLS",
+        line_no=12,
+    )
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[e1, e2], []]
+
+    def fetch_block(_repo_id: str, target_id: str):
+        return {
+            "chunk_id": target_id,
+            "file_path": "a.py",
+            "name": "x",
+            "chunk_type": "function",
+            "start_line": 20,
+        }
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0, block_fetcher=fetch_block)
+    out = r.search("q")
+    rel = out[0].metadata["related_blocks"]
+
+    assert len(rel) == 2
+    assert rel[0]["target_id"] == "r1::a.py::function::h"
+    assert rel[0]["score"] >= rel[1]["score"]
+
+
+def test_duplicate_targets_are_aggregated_with_evidence_count():
+    base = MagicMock()
+    base.search.return_value = [_mk_result()]
+
+    # Same target from outgoing and incoming edges should aggregate into one row.
+    out_e = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::function::g",
+        edge_type="CALLS",
+        line_no=8,
+    )
+    in_e = SimpleNamespace(
+        src_id="r1::a.py::function::g",
+        dst_id="r1::a.py::function::f",
+        edge_type="IMPLEMENTS",
+        line_no=9,
+    )
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[out_e], [in_e]]
+
+    def fetch_block(_repo_id: str, target_id: str):
+        return {
+            "chunk_id": target_id,
+            "file_path": "a.py",
+            "name": "g",
+            "chunk_type": "function",
+            "start_line": 20,
+        }
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0, block_fetcher=fetch_block)
+    out = r.search("q")
+    rel = out[0].metadata["related_blocks"]
+
+    assert len(rel) == 1
+    assert rel[0]["target_id"] == "r1::a.py::function::g"
+    assert rel[0]["evidence_count"] == 2
+    assert set(rel[0]["edge_types"]) == {"CALLS", "IMPLEMENTS"}
+
+
+def test_main_search_order_is_preserved():
+    # Related expansion must not reorder primary retrieval results.
+    r1 = _mk_result(chunk_id="r1::a.py::function::f", start_line=10)
+    r2 = _mk_result(chunk_id="r1::a.py::function::z", start_line=100)
+    base = MagicMock()
+    base.search.return_value = [r1, r2]
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[], [], [], []]
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0)
+    out = r.search("q")
+
+    assert [x.metadata["chunk_id"] for x in out] == [
+        "r1::a.py::function::f",
+        "r1::a.py::function::z",
+    ]
