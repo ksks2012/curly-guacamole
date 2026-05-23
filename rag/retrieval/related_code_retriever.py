@@ -36,6 +36,22 @@ _DIRECTION_BONUS = {
 }
 
 
+def _parse_symbol_like_id(identifier: str) -> tuple[str, str, str, str] | None:
+    """Parse IDs shaped as ``repo_id::file_path::chunk_type::name``.
+
+    Returns
+    -------
+    Tuple ``(repo_id, file_path, chunk_type, name)`` or None when malformed.
+    """
+    parts = identifier.split("::", 3)
+    if len(parts) != 4:
+        return None
+    repo_id, file_path, chunk_type, name = parts
+    if not repo_id or not file_path or not chunk_type or not name:
+        return None
+    return repo_id, file_path, chunk_type, name
+
+
 class RelatedCodeRetriever:
     """Compose a base retriever and append related block metadata.
 
@@ -185,9 +201,16 @@ class RelatedCodeRetriever:
             if str(target_id).startswith("import::"):
                 continue
 
-            target_meta = self._fetch_block_metadata(repo_id=repo_id, target_id=target_id)
+            line_no = int(getattr(edge, "line_no", 0) or 0)
+            target_meta = self._fetch_block_metadata(
+                repo_id=repo_id,
+                target_id=target_id,
+                preferred_line=line_no,
+            )
             if target_meta is None:
                 continue
+
+            mapping_strategy = target_meta.pop("_mapping_strategy", "exact_chunk_id")
 
             rows.append(
                 {
@@ -198,8 +221,9 @@ class RelatedCodeRetriever:
                     "explain": (
                         f"{direction} {edge.edge_type.lower()} dependency"
                     ),
-                    "line_no": int(getattr(edge, "line_no", 0) or 0),
+                    "line_no": line_no,
                     "hop": 1,
+                    "mapping_strategy": mapping_strategy,
                     "target_file_path": target_meta.get("file_path", ""),
                     "target_name": target_meta.get("name", ""),
                     "target_chunk_type": target_meta.get("chunk_type", ""),
@@ -324,6 +348,7 @@ class RelatedCodeRetriever:
             merged["score"] = round(score, 4)
             merged["evidence_count"] = len(evidence)
             merged["edge_types"] = sorted({e for e in edge_types if e})
+            merged["mapping_strategy"] = str(row.get("mapping_strategy", "exact_chunk_id"))
             merged["explain"] = explain
             # Keep backward-compatible "reason" while moving UI-facing copy to explain.
             merged["reason"] = explain
@@ -405,9 +430,20 @@ class RelatedCodeRetriever:
     # Internal: block metadata lookup
     # ------------------------------------------------------------------
 
-    def _fetch_block_metadata(self, *, repo_id: str, target_id: str) -> dict | None:
+    def _fetch_block_metadata(
+        self,
+        *,
+        repo_id: str,
+        target_id: str,
+        preferred_line: int = 0,
+    ) -> dict | None:
         if self._block_fetcher is not None:
-            return self._block_fetcher(repo_id, target_id)
+            meta = self._block_fetcher(repo_id, target_id)
+            if meta is None:
+                return None
+            m = dict(meta)
+            m.setdefault("_mapping_strategy", "custom_fetcher")
+            return m
 
         db = self._resolve_block_db()
         if db is None:
@@ -421,7 +457,92 @@ class RelatedCodeRetriever:
         }
         raw = db.get(where=where, include=["metadatas"])
         metas = raw.get("metadatas", []) or []
-        return dict(metas[0]) if metas else None
+        if metas:
+            m = dict(metas[0])
+            m["_mapping_strategy"] = "exact_chunk_id"
+            return m
+
+        parsed = _parse_symbol_like_id(target_id)
+        if parsed is None:
+            return None
+
+        parsed_repo, file_path, parsed_type, parsed_name = parsed
+        if parsed_repo != repo_id:
+            return None
+
+        file_blocks = self._fetch_file_blocks(repo_id=repo_id, file_path=file_path)
+        if not file_blocks:
+            return None
+
+        matched = [
+            b for b in file_blocks
+            if str(b.get("name", "")).strip() == parsed_name
+        ]
+
+        # Fallback for ambiguous or missing names: use chunk_type + file context.
+        if not matched:
+            matched = [
+                b for b in file_blocks
+                if str(b.get("chunk_type", "")).strip() == parsed_type
+            ]
+
+        if not matched:
+            return None
+
+        chosen = self._choose_block_candidate(
+            candidates=matched,
+            parsed_type=parsed_type,
+            preferred_line=preferred_line,
+        )
+        if chosen is None:
+            return None
+
+        chosen = dict(chosen)
+        chosen["_mapping_strategy"] = "symbol_key_fallback"
+        return chosen
+
+    def _choose_block_candidate(
+        self,
+        *,
+        candidates: list[dict],
+        parsed_type: str,
+        preferred_line: int,
+    ) -> dict | None:
+        if not candidates:
+            return None
+
+        def _type_rank(chunk_type: str) -> int:
+            if chunk_type == parsed_type:
+                return 0
+            if {chunk_type, parsed_type} <= {"function", "method"}:
+                return 1
+            return 2
+
+        def _span_size(meta: dict) -> int:
+            s = int(meta.get("start_line", 0) or 0)
+            e = int(meta.get("end_line", 0) or 0)
+            if s > 0 and e >= s:
+                return e - s + 1
+            return 10**9
+
+        def _line_distance(meta: dict) -> int:
+            if preferred_line <= 0:
+                return 0
+            s = int(meta.get("start_line", 0) or 0)
+            if s <= 0:
+                return 10**9
+            return abs(s - preferred_line)
+
+        ranked = sorted(
+            candidates,
+            key=lambda m: (
+                _type_rank(str(m.get("chunk_type", "")).strip()),
+                _span_size(m),
+                _line_distance(m),
+                int(m.get("start_line", 0) or 0),
+            ),
+        )
+        return ranked[0]
 
     def _fetch_file_blocks(self, *, repo_id: str, file_path: str) -> list[dict]:
         if self._file_blocks_fetcher is not None:

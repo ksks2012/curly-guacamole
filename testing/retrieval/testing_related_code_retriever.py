@@ -9,6 +9,32 @@ from rag.retrieval.base import RetrievalResult
 from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 
 
+class _FakeBlockDb:
+    def __init__(self, exact_metas=None, file_metas=None):
+        self.exact_metas = exact_metas or []
+        self.file_metas = file_metas or []
+
+    def get(self, where=None, include=None):
+        where = where or {}
+        clauses = where.get("$and", [])
+        keys = {next(iter(c.keys())) for c in clauses if c}
+        if "chunk_id" in keys:
+            return {"metadatas": list(self.exact_metas)}
+        if "file_path" in keys:
+            return {"metadatas": list(self.file_metas)}
+        return {"metadatas": []}
+
+
+class _BaseWithIndexer:
+    def __init__(self, result: RetrievalResult, db: _FakeBlockDb):
+        self._result = result
+        self._indexer = MagicMock()
+        self._indexer._db.return_value = db
+
+    def search(self, query, top_k=5, filters=None):
+        return [self._result]
+
+
 def _mk_result(
     *,
     chunk_id: str = "r1::a.py::function::f",
@@ -317,3 +343,128 @@ def test_main_search_order_is_preserved():
         "r1::a.py::function::f",
         "r1::a.py::function::z",
     ]
+
+
+def test_symbol_to_block_mapping_fallback_repo_file_name_key():
+    # target_id is method symbol; no exact chunk_id row exists in block DB.
+    edge = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::method::Service.run",
+        edge_type="CALLS",
+        line_no=42,
+    )
+
+    file_metas = [
+        {
+            "chunk_id": "r1::a.py::method::Service.run",
+            "repo_id": "r1",
+            "file_path": "a.py",
+            "name": "Service.run",
+            "chunk_type": "method",
+            "start_line": 40,
+            "end_line": 60,
+        }
+    ]
+    db = _FakeBlockDb(exact_metas=[], file_metas=file_metas)
+    base = _BaseWithIndexer(_mk_result(), db)
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[edge], []]
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0)
+    out = r.search("q")
+    rel = out[0].metadata["related_blocks"]
+
+    assert len(rel) == 1
+    assert rel[0]["target_id"] == "r1::a.py::method::Service.run"
+    assert rel[0]["mapping_strategy"] == "symbol_key_fallback"
+
+
+def test_symbol_mapping_prefers_smallest_enclosing_block():
+    edge = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::function::core.logic",
+        edge_type="CALLS",
+        line_no=80,
+    )
+
+    # Both candidates match (repo_id, file_path, name).
+    # Smaller span should win first.
+    file_metas = [
+        {
+            "chunk_id": "r1::a.py::function::core.logic::wide",
+            "repo_id": "r1",
+            "file_path": "a.py",
+            "name": "core.logic",
+            "chunk_type": "function",
+            "start_line": 1,
+            "end_line": 200,
+        },
+        {
+            "chunk_id": "r1::a.py::function::core.logic::narrow",
+            "repo_id": "r1",
+            "file_path": "a.py",
+            "name": "core.logic",
+            "chunk_type": "function",
+            "start_line": 70,
+            "end_line": 90,
+        },
+    ]
+    db = _FakeBlockDb(exact_metas=[], file_metas=file_metas)
+    base = _BaseWithIndexer(_mk_result(), db)
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[edge], []]
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0)
+    out = r.search("q")
+    rel = out[0].metadata["related_blocks"]
+
+    assert len(rel) == 1
+    assert rel[0]["target_id"] == "r1::a.py::function::core.logic"
+    assert rel[0]["target_name"] == "core.logic"
+
+
+def test_symbol_mapping_prefers_nearest_line_when_span_equal():
+    edge = SimpleNamespace(
+        src_id="r1::a.py::function::f",
+        dst_id="r1::a.py::function::worker",
+        edge_type="CALLS",
+        line_no=90,
+    )
+
+    # Same span size, different start lines. Should choose nearest to edge line_no.
+    file_metas = [
+        {
+            "chunk_id": "r1::a.py::function::worker::far",
+            "repo_id": "r1",
+            "file_path": "a.py",
+            "name": "worker",
+            "chunk_type": "function",
+            "start_line": 20,
+            "end_line": 30,
+        },
+        {
+            "chunk_id": "r1::a.py::function::worker::near",
+            "repo_id": "r1",
+            "file_path": "a.py",
+            "name": "worker",
+            "chunk_type": "function",
+            "start_line": 88,
+            "end_line": 98,
+        },
+    ]
+    db = _FakeBlockDb(exact_metas=[], file_metas=file_metas)
+    base = _BaseWithIndexer(_mk_result(), db)
+
+    graph = MagicMock()
+    graph.get_edges.side_effect = [[edge], []]
+
+    r = RelatedCodeRetriever(base, graph, max_related=5, max_nearby=0)
+    out = r.search("q")
+    rel = out[0].metadata["related_blocks"]
+
+    assert len(rel) == 1
+    assert rel[0]["target_id"] == "r1::a.py::function::worker"
+    # Mapping fallback should still provide stable target metadata.
+    assert rel[0]["target_file_path"] == "a.py"
