@@ -5,6 +5,7 @@ Unified interface (Phase 1):
     document_retriever  : DocumentRetriever (wraps Searcher)
     code_retriever      : CodeRetriever (wraps CodeIndexer)
     hierarchical_code_retriever : HierarchicalCodeRetriever (RepoIndex + CodeRetriever)
+    related_code_retriever : RelatedCodeRetriever (relation-enriched code blocks)
     hybrid_retriever    : HybridRetriever (RRF fusion of multiple retrievers)
 
 Pipeline (Step 1.4):
@@ -23,6 +24,7 @@ from rag.retrieval.base import BaseRetriever, RetrievalResult
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.code_retriever import CodeRetriever
 from rag.retrieval.hierarchical_code_retriever import HierarchicalCodeRetriever
+from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import (
     PipelineBuilder,
@@ -37,6 +39,7 @@ __all__ = [
     "DocumentRetriever",
     "CodeRetriever",
     "HierarchicalCodeRetriever",
+    "RelatedCodeRetriever",
     "HybridRetriever",
     "PipelineContext",
     "PipelineStep",
