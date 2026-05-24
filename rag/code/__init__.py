@@ -30,6 +30,13 @@ from rag.code.repo_index import RepoIndex
 from rag.code.knowledge_base import CodeKnowledgeBase
 from rag.code.git_reader import GitReader
 from rag.code.snapshot_store import SnapshotStore, SymbolDiff
+from rag.code.orchestration_service import (
+    CodeOrchestrationService,
+    OrchestrationResult,
+    ParseStats,
+    EdgeStats,
+)
+from rag.code.state_repository import CodeOrchestrationStateRepository
 
 __all__ = [
     # schema
@@ -51,4 +58,9 @@ __all__ = [
     "GitReader",
     "SnapshotStore",
     "SymbolDiff",
+    "CodeOrchestrationService",
+    "OrchestrationResult",
+    "ParseStats",
+    "EdgeStats",
+    "CodeOrchestrationStateRepository",
 ]
