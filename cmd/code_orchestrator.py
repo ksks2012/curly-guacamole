@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -54,6 +55,7 @@ class EdgeStats:
     parsed_edges: int = 0
     inserted_edges: int = 0
     deleted_edges: int = 0
+    skipped_same_commit: int = 0
     edge_errors: int = 0
 
 
@@ -62,6 +64,7 @@ class OrchestrationResult:
     status: str
     operation_id: str
     run_state_path: str
+    head_commit: str
     mode: str
     repo_id: str
     repo_path: str
@@ -227,6 +230,45 @@ class CodeRepoOrchestrator:
         path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
         return str(path)
 
+    @staticmethod
+    def _git_head_commit(repo_path: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo_path, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return ""
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+
+    def _edge_reindex_state_path(self) -> Path:
+        return Path(self._code_rag_root) / "ops" / "edge_reindex_state.json"
+
+    def _load_edge_reindex_state(self) -> dict[str, str]:
+        path = self._edge_reindex_state_path()
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        state: dict[str, str] = {}
+        for key, val in raw.items():
+            if isinstance(key, str) and isinstance(val, str):
+                state[key] = val
+        return state
+
+    def _save_edge_reindex_state(self, state: dict[str, str]) -> None:
+        path = self._edge_reindex_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=True, indent=2), encoding="utf-8")
+
     def run(
         self,
         *,
@@ -235,6 +277,7 @@ class CodeRepoOrchestrator:
         mode: str = "ingest",
         branch: str | None = None,
         include_repo: bool = True,
+        force_edge_reindex: bool = False,
     ) -> OrchestrationResult:
         if mode not in {"ingest", "reindex"}:
             raise ValueError(f"Unsupported mode: {mode!r}")
@@ -242,6 +285,7 @@ class CodeRepoOrchestrator:
         repo_path = str(Path(repo_path).resolve())
         operation_id = self._new_operation_id(repo_id)
         started_at = datetime.now(UTC).isoformat()
+        head_commit = self._git_head_commit(repo_path)
 
         manifest = self._scanner.scan(repo_path=repo_path, repo_id=repo_id, branch=branch)
         chunks, edges, parse_stats, edge_stats = self._collect_chunks_and_edges(manifest)
@@ -262,7 +306,9 @@ class CodeRepoOrchestrator:
                 "started_at": started_at,
                 "repo_id": repo_id,
                 "repo_path": repo_path,
+                "head_commit": head_commit,
                 "mode": mode,
+                "force_edge_reindex": bool(force_edge_reindex),
                 "parse": asdict(parse_stats),
                 "edge": asdict(edge_stats),
                 "index": self._stats_to_dict(index_stats),
@@ -292,14 +338,34 @@ class CodeRepoOrchestrator:
             )
 
         try:
-            deleted_edges, inserted_edges = self._write_edges(
-                repo_id=repo_id,
-                edges=edges,
-                mode=mode,
-            )
-            edge_stats.deleted_edges = deleted_edges
-            edge_stats.inserted_edges = inserted_edges
-            edge_ok = edge_stats.edge_errors == 0
+            should_skip_same_commit = False
+            if mode == "reindex" and not force_edge_reindex and head_commit:
+                prev = self._load_edge_reindex_state().get(repo_id, "")
+                should_skip_same_commit = prev == head_commit
+
+            if should_skip_same_commit:
+                edge_stats.skipped_same_commit = 1
+                edge_ok = True
+                log.info(
+                    "edge reindex skipped (same commit): repo=%s commit=%s operation_id=%s",
+                    repo_id,
+                    head_commit,
+                    operation_id,
+                )
+            else:
+                deleted_edges, inserted_edges = self._write_edges(
+                    repo_id=repo_id,
+                    edges=edges,
+                    mode=mode,
+                )
+                edge_stats.deleted_edges = deleted_edges
+                edge_stats.inserted_edges = inserted_edges
+                edge_ok = edge_stats.edge_errors == 0
+
+                if mode == "reindex" and edge_ok and head_commit:
+                    state = self._load_edge_reindex_state()
+                    state[repo_id] = head_commit
+                    self._save_edge_reindex_state(state)
         except Exception as e:
             edge_stats.edge_errors += 1
             edge_error = str(e)
@@ -329,7 +395,9 @@ class CodeRepoOrchestrator:
                 "finished_at": datetime.now(UTC).isoformat(),
                 "repo_id": repo_id,
                 "repo_path": repo_path,
+                "head_commit": head_commit,
                 "mode": mode,
+                "force_edge_reindex": bool(force_edge_reindex),
                 "parse": asdict(parse_stats),
                 "edge": asdict(edge_stats),
                 "index": self._stats_to_dict(index_stats),
@@ -344,6 +412,7 @@ class CodeRepoOrchestrator:
             status=status,
             operation_id=operation_id,
             run_state_path=run_state_path,
+            head_commit=head_commit,
             mode=mode,
             repo_id=repo_id,
             repo_path=repo_path,
@@ -394,6 +463,15 @@ def _parse_args() -> argparse.Namespace:
         help="Override the SQLite path used for dependency edges",
     )
     parser.add_argument(
+        "--force-edge-reindex",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Force edge updates in reindex mode even if the current commit was "
+            "already reindexed"
+        ),
+    )
+    parser.add_argument(
         "--output",
         choices=["json", "text"],
         default="json",
@@ -427,6 +505,7 @@ def main() -> int:
             mode=args.mode,
             branch=args.branch,
             include_repo=bool(args.include_repo),
+            force_edge_reindex=bool(args.force_edge_reindex),
         )
     except Exception as e:
         err = {
@@ -448,6 +527,7 @@ def main() -> int:
             f"status={result.status} mode={result.mode} repo_id={result.repo_id} "
             f"operation_id={result.operation_id}"
         )
+        print(f"head_commit={result.head_commit or '<none>'}")
         print(f"run_state_path={result.run_state_path}")
         print(
             "parse: "
@@ -466,6 +546,7 @@ def main() -> int:
             "edge: "
             f"edge_files={edge.edge_files} parsed_edges={edge.parsed_edges} "
             f"inserted={edge.inserted_edges} deleted={edge.deleted_edges} "
+            f"skipped_same_commit={edge.skipped_same_commit} "
             f"errors={edge.edge_errors}"
         )
         print(f"collections={result.collections}")

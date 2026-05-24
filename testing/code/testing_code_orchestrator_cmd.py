@@ -275,3 +275,116 @@ def test_run_invalid_mode_raises(tmp_path):
         assert False, "Expected ValueError"
     except ValueError as e:
         assert "Unsupported mode" in str(e)
+
+
+def test_reindex_skips_edge_update_on_same_commit_without_force(tmp_path):
+    mod = _load_module()
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    manifest = RepoManifest(
+        repo_id="r6",
+        repo_root=str(repo_root),
+        branch="main",
+        files={
+            "a.py": RepoFile("r6", "main", "a.py", "Python", 1, False, False, "h", "t"),
+        },
+    )
+
+    scanner = MagicMock()
+    scanner.scan.return_value = manifest
+
+    parser = MagicMock()
+    parser.parse.return_value = [_chunk("r6::a.py::function::f", "a.py")]
+    parser.parse_edges.return_value = [
+        _edge("e6", "r6::a.py::module::<module>", "import::os", "a.py")
+    ]
+
+    kb = MagicMock()
+    kb.reindex.return_value = IndexStats(added=1, updated=0, skipped=0, deleted=0)
+    kb.collection_stats.return_value = {"repo": 1, "file": 1, "symbol": 1, "block": 1}
+
+    graph_store = MagicMock()
+    graph_store.delete_repo_edges.return_value = 2
+    graph_store.upsert_edges.return_value = 1
+
+    orch = mod.CodeRepoOrchestrator(
+        code_rag_root=str(tmp_path / "db"),
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
+    orch._git_head_commit = MagicMock(return_value="commit-abc")
+
+    first = orch.run(repo_path=str(repo_root), repo_id="r6", mode="reindex")
+    assert first.status == "ok"
+    assert first.edge.skipped_same_commit == 0
+    assert graph_store.delete_repo_edges.call_count == 1
+    assert graph_store.upsert_edges.call_count == 1
+
+    second = orch.run(repo_path=str(repo_root), repo_id="r6", mode="reindex")
+    assert second.status == "ok"
+    assert second.edge.skipped_same_commit == 1
+    # Edge write should be skipped on second reindex for same commit.
+    assert graph_store.delete_repo_edges.call_count == 1
+    assert graph_store.upsert_edges.call_count == 1
+
+
+def test_reindex_force_edge_update_on_same_commit(tmp_path):
+    mod = _load_module()
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    (repo_root / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+
+    manifest = RepoManifest(
+        repo_id="r7",
+        repo_root=str(repo_root),
+        branch="main",
+        files={
+            "a.py": RepoFile("r7", "main", "a.py", "Python", 1, False, False, "h", "t"),
+        },
+    )
+
+    scanner = MagicMock()
+    scanner.scan.return_value = manifest
+
+    parser = MagicMock()
+    parser.parse.return_value = [_chunk("r7::a.py::function::f", "a.py")]
+    parser.parse_edges.return_value = [
+        _edge("e7", "r7::a.py::module::<module>", "import::os", "a.py")
+    ]
+
+    kb = MagicMock()
+    kb.reindex.return_value = IndexStats(added=1, updated=0, skipped=0, deleted=0)
+    kb.collection_stats.return_value = {"repo": 1, "file": 1, "symbol": 1, "block": 1}
+
+    graph_store = MagicMock()
+    graph_store.delete_repo_edges.return_value = 2
+    graph_store.upsert_edges.return_value = 1
+
+    orch = mod.CodeRepoOrchestrator(
+        code_rag_root=str(tmp_path / "db"),
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
+    orch._git_head_commit = MagicMock(return_value="commit-xyz")
+
+    first = orch.run(repo_path=str(repo_root), repo_id="r7", mode="reindex")
+    assert first.edge.skipped_same_commit == 0
+
+    second = orch.run(
+        repo_path=str(repo_root),
+        repo_id="r7",
+        mode="reindex",
+        force_edge_reindex=True,
+    )
+    assert second.edge.skipped_same_commit == 0
+    # Force mode should trigger edge rewrite even on same commit.
+    assert graph_store.delete_repo_edges.call_count == 2
+    assert graph_store.upsert_edges.call_count == 2
