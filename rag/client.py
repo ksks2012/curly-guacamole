@@ -374,6 +374,56 @@ class LocalLlamaClient:
     ) -> list[dict]:
         return self.searcher.browse_chunks(doc_id=doc_id, tag=tag, topic=topic, limit=limit)
 
+    def browse_code_blocks(
+        self,
+        *,
+        repo_id: str | None = None,
+        file_path: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return code chunks from the ``code_block`` collection.
+
+        Each item has keys:
+            - ``content``  : full code text
+            - ``metadata`` : stored CodeChunk metadata
+        """
+        try:
+            block_db = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embed,
+                collection_name="code_block",
+            )
+        except Exception as exc:
+            log.warning("browse_code_blocks: cannot open code_block collection: %s", exc)
+            return []
+
+        conditions: list[dict] = []
+        if repo_id:
+            conditions.append({"repo_id": {"$eq": repo_id}})
+        if file_path:
+            conditions.append({"file_path": {"$eq": file_path}})
+
+        kwargs: dict = {"include": ["documents", "metadatas"], "limit": limit}
+        if len(conditions) == 1:
+            kwargs["where"] = conditions[0]
+        elif len(conditions) > 1:
+            kwargs["where"] = {"$and": conditions}
+
+        try:
+            result = block_db.get(**kwargs)
+        except Exception as exc:
+            log.warning("browse_code_blocks: query failed: %s", exc)
+            return []
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+
+        rows: list[dict] = []
+        for text, meta in zip(docs, metas):
+            if not text:
+                continue
+            rows.append({"content": text, "metadata": meta or {}})
+        return rows
+
     def rebuild_bm25(self) -> None:
         self.searcher.rebuild_bm25()
 
