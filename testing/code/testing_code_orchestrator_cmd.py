@@ -101,6 +101,8 @@ def test_run_ingest_aggregates_parse_stats_and_calls_kb(tmp_path):
     out = orch.run(repo_path=str(tmp_path), repo_id="r1", mode="ingest")
 
     assert out.status == "ok"
+    assert out.operation_id.startswith("r1-")
+    assert out.run_state_path.endswith(".json")
     assert out.mode == "ingest"
     assert out.parse.source_files_total == 4
     assert out.parse.python_candidates == 3
@@ -165,6 +167,91 @@ def test_run_reindex_calls_reindex(tmp_path):
     assert out.index["deleted"] == 1
     assert out.edge.deleted_edges == 3
     assert out.edge.inserted_edges == 1
+
+
+def test_run_partial_ok_when_vector_fails_but_edge_succeeds(tmp_path):
+    mod = _load_module()
+
+    (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    manifest = RepoManifest(
+        repo_id="r4",
+        repo_root=str(tmp_path),
+        branch="main",
+        files={
+            "a.py": RepoFile("r4", "main", "a.py", "Python", 1, False, False, "h", "t"),
+        },
+    )
+
+    scanner = MagicMock()
+    scanner.scan.return_value = manifest
+
+    parser = MagicMock()
+    parser.parse.return_value = [_chunk("r4::a.py::function::f", "a.py")]
+    parser.parse_edges.return_value = [
+        _edge("e4", "r4::a.py::module::<module>", "import::os", "a.py")
+    ]
+
+    kb = MagicMock()
+    kb.ingest.side_effect = RuntimeError("vector failed")
+    kb.collection_stats.return_value = {"repo": 0, "file": 0, "symbol": 0, "block": 0}
+
+    graph_store = MagicMock()
+    graph_store.delete_repo_edges.return_value = 0
+    graph_store.upsert_edges.return_value = 1
+
+    orch = mod.CodeRepoOrchestrator(
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
+    out = orch.run(repo_path=str(tmp_path), repo_id="r4", mode="ingest")
+
+    assert out.status == "partial_ok"
+    assert out.edge.inserted_edges == 1
+    assert out.index["added"] == 0
+
+
+def test_run_error_when_vector_and_edge_both_fail(tmp_path):
+    mod = _load_module()
+
+    (tmp_path / "a.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    manifest = RepoManifest(
+        repo_id="r5",
+        repo_root=str(tmp_path),
+        branch="main",
+        files={
+            "a.py": RepoFile("r5", "main", "a.py", "Python", 1, False, False, "h", "t"),
+        },
+    )
+
+    scanner = MagicMock()
+    scanner.scan.return_value = manifest
+
+    parser = MagicMock()
+    parser.parse.return_value = [_chunk("r5::a.py::function::f", "a.py")]
+    parser.parse_edges.return_value = [
+        _edge("e5", "r5::a.py::module::<module>", "import::os", "a.py")
+    ]
+
+    kb = MagicMock()
+    kb.ingest.side_effect = RuntimeError("vector failed")
+    kb.collection_stats.return_value = {"repo": 0, "file": 0, "symbol": 0, "block": 0}
+
+    graph_store = MagicMock()
+    graph_store.delete_repo_edges.return_value = 0
+    graph_store.upsert_edges.side_effect = RuntimeError("edge failed")
+
+    orch = mod.CodeRepoOrchestrator(
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
+    out = orch.run(repo_path=str(tmp_path), repo_id="r5", mode="ingest")
+
+    assert out.status == "error"
+    assert out.edge.edge_errors >= 1
 
 
 def test_run_invalid_mode_raises(tmp_path):

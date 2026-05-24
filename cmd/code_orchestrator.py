@@ -15,7 +15,9 @@ import argparse
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from langchain_openai import OpenAIEmbeddings
 
@@ -58,6 +60,8 @@ class EdgeStats:
 @dataclass
 class OrchestrationResult:
     status: str
+    operation_id: str
+    run_state_path: str
     mode: str
     repo_id: str
     repo_path: str
@@ -207,7 +211,21 @@ class CodeRepoOrchestrator:
         if mode == "reindex":
             deleted = self._graph.delete_repo_edges(repo_id)
         inserted = self._graph.upsert_edges(edges)
-        return deleted, inserted
+        return int(deleted or 0), int(inserted or 0)
+
+    @staticmethod
+    def _new_operation_id(repo_id: str) -> str:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        return f"{repo_id}-{stamp}-{uuid4().hex[:8]}"
+
+    def _run_state_path(self, operation_id: str) -> Path:
+        return Path(self._code_rag_root) / "ops" / f"{operation_id}.json"
+
+    def _write_run_state(self, operation_id: str, payload: dict) -> str:
+        path = self._run_state_path(operation_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        return str(path)
 
     def run(
         self,
@@ -218,18 +236,60 @@ class CodeRepoOrchestrator:
         branch: str | None = None,
         include_repo: bool = True,
     ) -> OrchestrationResult:
+        if mode not in {"ingest", "reindex"}:
+            raise ValueError(f"Unsupported mode: {mode!r}")
+
         repo_path = str(Path(repo_path).resolve())
+        operation_id = self._new_operation_id(repo_id)
+        started_at = datetime.now(UTC).isoformat()
+
         manifest = self._scanner.scan(repo_path=repo_path, repo_id=repo_id, branch=branch)
         chunks, edges, parse_stats, edge_stats = self._collect_chunks_and_edges(manifest)
         store = SymbolStore.from_chunks(chunks, repo_id=repo_id)
 
-        source = (manifest, chunks)
-        if mode == "ingest":
-            index_stats = self._kb.ingest(source, store=store, include_repo=include_repo)
-        elif mode == "reindex":
-            index_stats = self._kb.reindex(source, store=store, include_repo=include_repo)
-        else:
-            raise ValueError(f"Unsupported mode: {mode!r}")
+        index_stats = IndexStats()
+        vector_ok = False
+        edge_ok = False
+        vector_error = ""
+        edge_error = ""
+
+        run_state_path = self._write_run_state(
+            operation_id,
+            {
+                "operation_id": operation_id,
+                "status": "staging",
+                "phase": "staging",
+                "started_at": started_at,
+                "repo_id": repo_id,
+                "repo_path": repo_path,
+                "mode": mode,
+                "parse": asdict(parse_stats),
+                "edge": asdict(edge_stats),
+                "index": self._stats_to_dict(index_stats),
+                "vector_ok": False,
+                "edge_ok": False,
+                "vector_error": "",
+                "edge_error": "",
+            },
+        )
+
+        try:
+            source = (manifest, chunks)
+            if mode == "ingest":
+                index_stats = self._kb.ingest(source, store=store, include_repo=include_repo)
+            else:
+                index_stats = self._kb.reindex(source, store=store, include_repo=include_repo)
+            vector_ok = True
+        except Exception as e:
+            vector_error = str(e)
+            log.warning(
+                "vector write failed: repo=%s mode=%s operation_id=%s error=%s",
+                repo_id,
+                mode,
+                operation_id,
+                e,
+                exc_info=True,
+            )
 
         try:
             deleted_edges, inserted_edges = self._write_edges(
@@ -239,13 +299,51 @@ class CodeRepoOrchestrator:
             )
             edge_stats.deleted_edges = deleted_edges
             edge_stats.inserted_edges = inserted_edges
+            edge_ok = edge_stats.edge_errors == 0
         except Exception as e:
             edge_stats.edge_errors += 1
-            log.warning("edge write failed: repo=%s mode=%s error=%s", repo_id, mode, e, exc_info=True)
+            edge_error = str(e)
+            log.warning(
+                "edge write failed: repo=%s mode=%s operation_id=%s error=%s",
+                repo_id,
+                mode,
+                operation_id,
+                e,
+                exc_info=True,
+            )
 
-        status = "ok" if edge_stats.edge_errors == 0 else "partial_ok"
+        if vector_ok and edge_ok:
+            status = "ok"
+        elif vector_ok or edge_ok:
+            status = "partial_ok"
+        else:
+            status = "error"
+
+        self._write_run_state(
+            operation_id,
+            {
+                "operation_id": operation_id,
+                "status": status,
+                "phase": "completed",
+                "started_at": started_at,
+                "finished_at": datetime.now(UTC).isoformat(),
+                "repo_id": repo_id,
+                "repo_path": repo_path,
+                "mode": mode,
+                "parse": asdict(parse_stats),
+                "edge": asdict(edge_stats),
+                "index": self._stats_to_dict(index_stats),
+                "vector_ok": vector_ok,
+                "edge_ok": edge_ok,
+                "vector_error": vector_error,
+                "edge_error": edge_error,
+            },
+        )
+
         return OrchestrationResult(
             status=status,
+            operation_id=operation_id,
+            run_state_path=run_state_path,
             mode=mode,
             repo_id=repo_id,
             repo_path=repo_path,
@@ -346,7 +444,11 @@ def main() -> int:
     else:
         p = result.parse
         idx = result.index
-        print(f"status={result.status} mode={result.mode} repo_id={result.repo_id}")
+        print(
+            f"status={result.status} mode={result.mode} repo_id={result.repo_id} "
+            f"operation_id={result.operation_id}"
+        )
+        print(f"run_state_path={result.run_state_path}")
         print(
             "parse: "
             f"source={p.source_files_total} python={p.python_candidates} "

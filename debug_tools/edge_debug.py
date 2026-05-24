@@ -1,7 +1,7 @@
 """Debug utility for printing dependency edges stored in GraphStore.
 
-This script is intentionally lightweight and lives under ``test/`` so it can
-be run locally without affecting the main application entry points.
+This script is intentionally lightweight and lives under ``debug_tools/`` so it
+can be run locally without affecting the main application entry points.
 """
 
 from __future__ import annotations
@@ -22,7 +22,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--src-id", default=None, help="Optional source node filter")
     parser.add_argument("--dst-id", default=None, help="Optional destination node filter")
     parser.add_argument("--limit", type=int, default=500, help="Maximum rows to print")
-    parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+    parser.add_argument(
+        "--output",
+        choices=["text", "json", "summary"],
+        default="text",
+        help="Output format",
+    )
     return parser.parse_args()
 
 
@@ -39,11 +44,35 @@ def main() -> int:
         dst_id=args.dst_id,
     )[: max(0, int(args.limit))]
 
-    if args.json:
+    if args.output == "json":
         payload = {
             "repo_id": args.repo_id,
             "count": len(rows),
             "edges": [r.to_dict() for r in rows],
+        }
+        print(json.dumps(payload, ensure_ascii=True, indent=2))
+        return 0
+
+    if args.output == "summary":
+        by_type: dict[str, int] = {}
+        by_file: dict[str, int] = {}
+        for row in rows:
+            by_type[row.edge_type] = by_type.get(row.edge_type, 0) + 1
+            by_file[row.file_path] = by_file.get(row.file_path, 0) + 1
+
+        payload = {
+            "repo_id": args.repo_id,
+            "count": len(rows),
+            "graph_db": config.graph_db_path,
+            "by_type": dict(sorted(by_type.items())),
+            "by_file": dict(sorted(by_file.items())),
+            "filters": {
+                "edge_type": args.edge_type,
+                "file_path": args.file_path,
+                "src_id": args.src_id,
+                "dst_id": args.dst_id,
+                "limit": int(args.limit),
+            },
         }
         print(json.dumps(payload, ensure_ascii=True, indent=2))
         return 0
