@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from rag.code.schema import CodeChunk, RepoFile, RepoManifest
+from rag.code.schema import CodeChunk, DependencyEdge, RepoFile, RepoManifest
 from rag.indexer import IndexStats
 
 
@@ -37,6 +37,18 @@ def _chunk(chunk_id: str, file_path: str) -> CodeChunk:
     )
 
 
+def _edge(edge_id: str, src_id: str, dst_id: str, file_path: str) -> DependencyEdge:
+    return DependencyEdge(
+        edge_id=edge_id,
+        src_id=src_id,
+        dst_id=dst_id,
+        edge_type="IMPORTS",
+        repo_id="r1",
+        file_path=file_path,
+        line_no=1,
+    )
+
+
 def test_run_ingest_aggregates_parse_stats_and_calls_kb(tmp_path):
     mod = _load_module()
 
@@ -60,20 +72,32 @@ def test_run_ingest_aggregates_parse_stats_and_calls_kb(tmp_path):
 
     parser = MagicMock()
 
-    def _parse_side_effect(path, repo_root, repo_id):
-        if path.name == "a.py":
+    def _parse_side_effect(source, file_path, repo_id):
+        if file_path == "a.py":
             return [_chunk("r1::a.py::function::f", "a.py")]
-        if path.name == "d.py":
+        if file_path == "d.py":
             raise ValueError("parse failed")
         return []
 
-    parser.parse_file.side_effect = _parse_side_effect
+    parser.parse.side_effect = _parse_side_effect
+    parser.parse_edges.side_effect = lambda source, file_path, repo_id: [
+        _edge("e1", "r1::a.py::module::<module>", "import::os", "a.py")
+    ] if file_path == "a.py" else []
 
     kb = MagicMock()
     kb.ingest.return_value = IndexStats(added=2, updated=1, skipped=3, deleted=0)
     kb.collection_stats.return_value = {"repo": 1, "file": 2, "symbol": 3, "block": 4}
 
-    orch = mod.CodeRepoOrchestrator(scanner=scanner, parser=parser, knowledge_base=kb)
+    graph_store = MagicMock()
+    graph_store.upsert_edges.return_value = 1
+    graph_store.delete_repo_edges.return_value = 0
+
+    orch = mod.CodeRepoOrchestrator(
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
     out = orch.run(repo_path=str(tmp_path), repo_id="r1", mode="ingest")
 
     assert out.status == "ok"
@@ -85,8 +109,13 @@ def test_run_ingest_aggregates_parse_stats_and_calls_kb(tmp_path):
     assert out.parse.skipped_non_python == 1
     assert out.parse.skipped_missing_files == 1
     assert out.parse.parse_errors == 1
+    assert out.edge.parsed_edges == 1
+    assert out.edge.inserted_edges == 1
+    assert out.edge.deleted_edges == 0
+    assert out.edge.edge_errors == 0
 
     kb.ingest.assert_called_once()
+    graph_store.upsert_edges.assert_called_once()
     assert out.index["added"] == 2
     assert out.collections["block"] == 4
 
@@ -108,18 +137,34 @@ def test_run_reindex_calls_reindex(tmp_path):
     scanner.scan.return_value = manifest
 
     parser = MagicMock()
-    parser.parse_file.return_value = [_chunk("r2::a.py::function::f", "a.py")]
+    parser.parse.return_value = [_chunk("r2::a.py::function::f", "a.py")]
+    parser.parse_edges.return_value = [
+        _edge("e2", "r2::a.py::module::<module>", "import::os", "a.py")
+    ]
 
     kb = MagicMock()
     kb.reindex.return_value = IndexStats(added=1, updated=0, skipped=0, deleted=1)
     kb.collection_stats.return_value = {"repo": 1, "file": 1, "symbol": 1, "block": 1}
 
-    orch = mod.CodeRepoOrchestrator(scanner=scanner, parser=parser, knowledge_base=kb)
+    graph_store = MagicMock()
+    graph_store.delete_repo_edges.return_value = 3
+    graph_store.upsert_edges.return_value = 1
+
+    orch = mod.CodeRepoOrchestrator(
+        scanner=scanner,
+        parser=parser,
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
     out = orch.run(repo_path=str(tmp_path), repo_id="r2", mode="reindex")
 
     kb.reindex.assert_called_once()
+    graph_store.delete_repo_edges.assert_called_once_with("r2")
+    graph_store.upsert_edges.assert_called_once()
     assert out.mode == "reindex"
     assert out.index["deleted"] == 1
+    assert out.edge.deleted_edges == 3
+    assert out.edge.inserted_edges == 1
 
 
 def test_run_invalid_mode_raises(tmp_path):
@@ -130,7 +175,13 @@ def test_run_invalid_mode_raises(tmp_path):
     scanner.scan.return_value = manifest
 
     kb = MagicMock()
-    orch = mod.CodeRepoOrchestrator(scanner=scanner, parser=MagicMock(), knowledge_base=kb)
+    graph_store = MagicMock()
+    orch = mod.CodeRepoOrchestrator(
+        scanner=scanner,
+        parser=MagicMock(),
+        knowledge_base=kb,
+        graph_store=graph_store,
+    )
 
     try:
         orch.run(repo_path=str(tmp_path), repo_id="r3", mode="update")

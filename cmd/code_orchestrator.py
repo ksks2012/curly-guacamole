@@ -13,15 +13,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from langchain_openai import OpenAIEmbeddings
 
 from rag.code.ast_parser import PythonASTParser
+from rag.code.graph_store import GraphStore
 from rag.code.knowledge_base import CodeKnowledgeBase
 from rag.code.scanner import RepoScanner
-from rag.code.schema import CodeChunk, RepoManifest
+from rag.code.schema import CodeChunk, DependencyEdge, RepoManifest
 from rag.code.symbol_store import SymbolStore
 from rag.embeddings import OpenRouterEmbeddings
 from rag.indexer import IndexStats
@@ -44,12 +46,23 @@ class ParseStats:
 
 
 @dataclass
+class EdgeStats:
+    source_files_total: int = 0
+    edge_files: int = 0
+    parsed_edges: int = 0
+    inserted_edges: int = 0
+    deleted_edges: int = 0
+    edge_errors: int = 0
+
+
+@dataclass
 class OrchestrationResult:
     status: str
     mode: str
     repo_id: str
     repo_path: str
     parse: ParseStats
+    edge: EdgeStats
     index: dict
     collections: dict
 
@@ -62,23 +75,37 @@ class CodeRepoOrchestrator:
         *,
         config: AppConfig | None = None,
         persist_directory: str | None = None,
+        code_rag_root: str | None = None,
+        graph_db_path: str | None = None,
         scanner: RepoScanner | None = None,
         parser: PythonASTParser | None = None,
         knowledge_base: CodeKnowledgeBase | None = None,
+        graph_store: GraphStore | None = None,
         embedding_function=None,
     ) -> None:
         self._config = config or AppConfig()
         self._scanner = scanner or RepoScanner()
         self._parser = parser or PythonASTParser()
 
+        effective_code_root = (
+            code_rag_root
+            or persist_directory
+            or self._config.code_rag_root
+        )
+        self._code_rag_root = str(Path(effective_code_root).resolve())
+        effective_graph_db = graph_db_path or os.path.join(self._code_rag_root, "graph.db")
+        self._graph_db_path = str(Path(effective_graph_db).resolve())
+
         if knowledge_base is not None:
             self._kb = knowledge_base
         else:
             embed = embedding_function or self._build_embedding(self._config)
             self._kb = CodeKnowledgeBase(
-                persist_directory or self._config.persist_directory,
+                self._code_rag_root,
                 embed,
             )
+
+        self._graph = graph_store or GraphStore(self._graph_db_path)
 
     @staticmethod
     def _build_embedding(config: AppConfig):
@@ -104,10 +131,15 @@ class CodeRepoOrchestrator:
             "deleted": int(stats.deleted),
         }
 
-    def _collect_chunks(self, manifest: RepoManifest) -> tuple[list[CodeChunk], ParseStats]:
+    def _collect_chunks_and_edges(
+        self,
+        manifest: RepoManifest,
+    ) -> tuple[list[CodeChunk], list[DependencyEdge], ParseStats, EdgeStats]:
         repo_root = Path(manifest.repo_root)
         chunks: list[CodeChunk] = []
+        edges: list[DependencyEdge] = []
         stats = ParseStats(source_files_total=len(manifest.source_files()))
+        edge_stats = EdgeStats(source_files_total=len(manifest.source_files()))
 
         for rf in manifest.source_files():
             if str(rf.language).lower() != "python":
@@ -123,15 +155,25 @@ class CodeRepoOrchestrator:
                 continue
 
             try:
-                file_chunks = self._parser.parse_file(
-                    path,
-                    repo_root=repo_root,
-                    repo_id=manifest.repo_id,
-                )
+                source = path.read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                stats.parse_errors += 1
+                log.warning("read error: repo=%s file=%s error=%s", manifest.repo_id, rf.file_path, e)
+                continue
+
+            try:
+                file_chunks = self._parser.parse(source, rf.file_path, manifest.repo_id)
             except Exception as e:
                 stats.parse_errors += 1
                 log.warning("parse error: repo=%s file=%s error=%s", manifest.repo_id, rf.file_path, e)
                 continue
+
+            try:
+                file_edges = self._parser.parse_edges(source, rf.file_path, manifest.repo_id)
+            except Exception as e:
+                edge_stats.edge_errors += 1
+                file_edges = []
+                log.warning("edge parse error: repo=%s file=%s error=%s", manifest.repo_id, rf.file_path, e)
 
             if not file_chunks:
                 stats.empty_parsed_files += 1
@@ -147,7 +189,25 @@ class CodeRepoOrchestrator:
             stats.parsed_chunks += len(valid_chunks)
             chunks.extend(valid_chunks)
 
-        return chunks, stats
+            edge_stats.edge_files += 1
+            edge_stats.parsed_edges += len(file_edges)
+            edges.extend(file_edges)
+
+        return chunks, edges, stats, edge_stats
+
+    def _write_edges(
+        self,
+        *,
+        repo_id: str,
+        edges: list[DependencyEdge],
+        mode: str,
+    ) -> tuple[int, int]:
+        deleted = 0
+        inserted = 0
+        if mode == "reindex":
+            deleted = self._graph.delete_repo_edges(repo_id)
+        inserted = self._graph.upsert_edges(edges)
+        return deleted, inserted
 
     def run(
         self,
@@ -160,7 +220,7 @@ class CodeRepoOrchestrator:
     ) -> OrchestrationResult:
         repo_path = str(Path(repo_path).resolve())
         manifest = self._scanner.scan(repo_path=repo_path, repo_id=repo_id, branch=branch)
-        chunks, parse_stats = self._collect_chunks(manifest)
+        chunks, edges, parse_stats, edge_stats = self._collect_chunks_and_edges(manifest)
         store = SymbolStore.from_chunks(chunks, repo_id=repo_id)
 
         source = (manifest, chunks)
@@ -171,12 +231,26 @@ class CodeRepoOrchestrator:
         else:
             raise ValueError(f"Unsupported mode: {mode!r}")
 
+        try:
+            deleted_edges, inserted_edges = self._write_edges(
+                repo_id=repo_id,
+                edges=edges,
+                mode=mode,
+            )
+            edge_stats.deleted_edges = deleted_edges
+            edge_stats.inserted_edges = inserted_edges
+        except Exception as e:
+            edge_stats.edge_errors += 1
+            log.warning("edge write failed: repo=%s mode=%s error=%s", repo_id, mode, e, exc_info=True)
+
+        status = "ok" if edge_stats.edge_errors == 0 else "partial_ok"
         return OrchestrationResult(
-            status="ok",
+            status=status,
             mode=mode,
             repo_id=repo_id,
             repo_path=repo_path,
             parse=parse_stats,
+            edge=edge_stats,
             index=self._stats_to_dict(index_stats),
             collections=self._kb.collection_stats(),
         )
@@ -207,9 +281,19 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--config", default=None, help="Path to config.yaml")
     parser.add_argument(
+        "--code-rag-root",
+        default=None,
+        help="Root directory for code RAG artifacts (vector store + GraphStore)",
+    )
+    parser.add_argument(
         "--persist-directory",
         default=None,
-        help="Override persist_directory from config",
+        help="Backward-compatible alias for --code-rag-root",
+    )
+    parser.add_argument(
+        "--graph-db-path",
+        default=None,
+        help="Override the SQLite path used for dependency edges",
     )
     parser.add_argument(
         "--output",
@@ -234,7 +318,8 @@ def main() -> int:
 
     orchestrator = CodeRepoOrchestrator(
         config=config,
-        persist_directory=args.persist_directory,
+        code_rag_root=args.code_rag_root or args.persist_directory,
+        graph_db_path=args.graph_db_path,
     )
 
     try:
@@ -273,6 +358,13 @@ def main() -> int:
             "index: "
             f"added={idx['added']} updated={idx['updated']} "
             f"skipped={idx['skipped']} deleted={idx['deleted']}"
+        )
+        edge = result.edge
+        print(
+            "edge: "
+            f"edge_files={edge.edge_files} parsed_edges={edge.parsed_edges} "
+            f"inserted={edge.inserted_edges} deleted={edge.deleted_edges} "
+            f"errors={edge.edge_errors}"
         )
         print(f"collections={result.collections}")
 
