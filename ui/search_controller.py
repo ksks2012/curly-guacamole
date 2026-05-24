@@ -188,11 +188,19 @@ class SearchController:
         self._last_query = query
 
         try:
-            result = self._client.search_for_trace(
-                query, k=k, fetch_k=fetch_k,
-                use_rerank=use_rerank, use_hybrid=use_hybrid,
-                search_filter=(self._filter if apply_filter and self.filter_active else None),
-            )
+            if result_scope == "code":
+                result = self._client.search_code_blocks(
+                    query,
+                    k=k,
+                    fetch_k=fetch_k,
+                    use_rerank=use_rerank,
+                )
+            else:
+                result = self._client.search_for_trace(
+                    query, k=k, fetch_k=fetch_k,
+                    use_rerank=use_rerank, use_hybrid=use_hybrid,
+                    search_filter=(self._filter if apply_filter and self.filter_active else None),
+                )
         except Exception as e:
             log.error("Search failed: %s", e, exc_info=True)
             return str(e)
@@ -280,12 +288,24 @@ class SearchController:
         """Select a code block row for the shared detail panel."""
         meta = dict((row or {}).get("metadata") or {})
         content = str((row or {}).get("content") or "")
-        self._metadata = {
-            **meta,
+        ordered_meta = {
             "source_type": str(meta.get("source_type") or "code"),
-            "_content_len": len(content),
-            "_content": content[:4000],
+            "repo_id": str(meta.get("repo_id", "")),
+            "file_path": str(meta.get("file_path", "")),
+            "chunk_type": str(meta.get("chunk_type", "")),
+            "name": str(meta.get("name", "")),
+            "language": str(meta.get("language", "")),
+            "branch": str(meta.get("branch", "")),
+            "start_line": meta.get("start_line", ""),
+            "end_line": meta.get("end_line", ""),
+            "chunk_id": str(meta.get("chunk_id", "")),
         }
+        for key in sorted(meta.keys()):
+            if key not in ordered_meta:
+                ordered_meta[key] = meta[key]
+        ordered_meta["_content_len"] = len(content)
+        ordered_meta["_content"] = content[:4000]
+        self._metadata = ordered_meta
 
     def set_filter(self, f: SearchFilter) -> None:
         """Replace the active filter entirely."""

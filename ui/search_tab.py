@@ -365,9 +365,9 @@ def build(
             )
         return out
 
-    with ui.row().style(
-        "flex: 1; min-height: 0; gap: 0.75rem; padding: 0.75rem;"
-        " overflow: hidden; align-items: stretch; flex-wrap: wrap;"
+    with ui.element("div").style(
+        "flex: 1; min-height: 0; display: flex; flex-direction: row;"
+        " gap: 0.75rem; padding: 0.75rem; overflow: hidden; align-items: stretch;"
     ):
         with ui.column().style(
             "flex: 1 1 48rem; min-width: 0; min-height: 0; display: flex; flex-direction: column;"
@@ -388,9 +388,12 @@ def build(
 
                     with ui.element("div").style(
                         "display: flex; flex-direction: row; flex: 1; min-height: 0; height: 100%;"
-                        " gap: 0.75rem; overflow-x: auto; overflow-y: hidden; flex: 1;"
+                        " gap: 0.75rem; overflow-x: auto; overflow-y: hidden;"
                     ):
-                        with ui.column().style("flex: 1 0 20rem; min-width: 20rem; min-height: 0; overflow-y: auto;"):
+                        with ui.element("div").style(
+                            "flex: 1 0 20rem; min-width: 20rem; min-height: 0; max-height: 100%;"
+                            " display: flex; flex-direction: column; overflow-y: auto;"
+                        ):
                             header = f"VECTOR  ({len(vector)})"
                             if hybrid_ids:
                                 header += f"  \u00b7  {len(hybrid_ids)} in fused"
@@ -426,7 +429,10 @@ def build(
                                     )
 
                         if hybrid_on:
-                            with ui.column().style("flex: 1 0 20rem; min-width: 20rem; min-height: 0; overflow-y: auto;"):
+                            with ui.element("div").style(
+                                "flex: 1 0 20rem; min-width: 20rem; min-height: 0; max-height: 100%;"
+                                " display: flex; flex-direction: column; overflow-y: auto;"
+                            ):
                                 bm25_count = len(bm25) if bm25 else 0
                                 ui.label(f"BM25  ({bm25_count})").classes(
                                     "text-xs font-semibold uppercase tracking-wide text-orange-500 mb-2"
@@ -450,7 +456,10 @@ def build(
                                         )
 
                             if not rerank_on:
-                                with ui.column().style("flex: 1 0 20rem; min-width: 20rem; min-height: 0; overflow-y: auto;"):
+                                with ui.element("div").style(
+                                    "flex: 1 0 20rem; min-width: 20rem; min-height: 0; max-height: 100%;"
+                                    " display: flex; flex-direction: column; overflow-y: auto;"
+                                ):
                                     fused_count = len(hybrid) if hybrid else 0
                                     ui.label(f"FUSED RRF  ({fused_count})").classes(
                                         "text-xs font-semibold uppercase tracking-wide text-amber-600 mb-2"
@@ -474,7 +483,10 @@ def build(
                                             )
 
                         if rerank_on:
-                            with ui.column().style("flex: 1 0 20rem; min-width: 20rem; min-height: 0; overflow-y: auto;"):
+                            with ui.element("div").style(
+                                "flex: 1 0 20rem; min-width: 20rem; min-height: 0; max-height: 100%;"
+                                " display: flex; flex-direction: column; overflow-y: auto;"
+                            ):
                                 count        = len(reranked) if reranked else 0
                                 label_prefix = "RERANKED (hybrid)" if hybrid_on else "RERANKED"
                                 ui.label(f"{label_prefix}  ({count})").classes(
@@ -749,6 +761,14 @@ def build_code_list(ctrl: SearchController, *, title: str = "Code List") -> None
             cb_text.on("keydown.enter", _apply_filters)
             cb_page_size.on_value_change(lambda _: _apply_filters())
 
+    def _toggle_code_block(state: dict, rr: dict, cid: str) -> None:
+        """Toggle the expanded code block card and keep the detail panel in sync."""
+        if state["selected_chunk_id"] == cid:
+            state["selected_chunk_id"] = ""
+        else:
+            state["selected_chunk_id"] = cid
+        ctrl.select_code_block(rr)
+
     with ui.element("div").style(
         "flex: 1; min-height: 0; display: flex; flex-direction: row;"
         " gap: 0.75rem; padding: 0.75rem; overflow: hidden; align-items: stretch;"
@@ -799,8 +819,7 @@ def build_code_list(ctrl: SearchController, *, title: str = "Code List") -> None
                         row,
                         expanded=(chunk_id == state["selected_chunk_id"]),
                         on_click=lambda rr=row, cid=chunk_id: (
-                            state.__setitem__("selected_chunk_id", cid),
-                            ctrl.select_code_block(rr),
+                            _toggle_code_block(state, rr, cid),
                             render_detail.refresh(),
                             render_code_blocks.refresh(),
                         ),
@@ -824,12 +843,29 @@ def build_code_list(ctrl: SearchController, *, title: str = "Code List") -> None
                 ui.label("Code block detail").classes(
                     "text-sm font-semibold text-gray-700 mb-2"
                 )
+                ordered_keys = [
+                    "source_type",
+                    "repo_id",
+                    "file_path",
+                    "chunk_type",
+                    "name",
+                    "language",
+                    "branch",
+                    "start_line",
+                    "end_line",
+                    "chunk_id",
+                ]
+                seen_keys = set()
                 with ui.grid(columns=2).classes("gap-x-3 gap-y-0.5 text-xs w-full"):
-                    for key, val in meta.items():
-                        if key == "_content":
+                    for key in ordered_keys:
+                        if key not in meta:
                             continue
+                        seen_keys.add(key)
                         ui.label(key).classes("font-mono text-gray-400 text-right truncate")
-                        ui.label(str(val)).classes("font-mono text-gray-800 break-all")
+                        ui.label(str(meta.get(key, ""))).classes("font-mono text-gray-800 break-all")
+                    for key in sorted(k for k in meta.keys() if k not in seen_keys and k != "_content"):
+                        ui.label(key).classes("font-mono text-gray-400 text-right truncate")
+                        ui.label(str(meta.get(key, ""))).classes("font-mono text-gray-800 break-all")
 
                 ui.separator().classes("my-2")
                 ui.label("Content").classes("text-xs font-semibold text-gray-400 mb-1")

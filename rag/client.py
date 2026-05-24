@@ -424,6 +424,53 @@ class LocalLlamaClient:
             rows.append({"content": text, "metadata": meta or {}})
         return rows
 
+    def search_code_blocks(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        fetch_k: int = 20,
+        use_rerank: bool = False,
+    ) -> dict:
+        """Search directly in the ``code_block`` collection.
+
+        Returns a dashboard-compatible payload:
+            {"vector", "bm25", "hybrid", "reranked", "trace"}
+        """
+        try:
+            block_db = Chroma(
+                persist_directory=self.persist_directory,
+                embedding_function=self.embed,
+                collection_name="code_block",
+            )
+        except Exception as exc:
+            log.warning("search_code_blocks: cannot open code_block collection: %s", exc)
+            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
+
+        try:
+            raw = block_db.similarity_search_with_score(query, k=fetch_k)
+        except Exception as exc:
+            log.warning("search_code_blocks: query failed: %s", exc)
+            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
+
+        vector = [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
+
+        reranked = None
+        if use_rerank and self.reranker is not None:
+            reranked = self.reranker.rerank_with_scores(
+                query,
+                [doc for doc, _ in vector],
+                top_k=k,
+            )
+
+        return {
+            "vector": vector,
+            "bm25": None,
+            "hybrid": None,
+            "reranked": reranked,
+            "trace": [],
+        }
+
     def rebuild_bm25(self) -> None:
         self.searcher.rebuild_bm25()
 
