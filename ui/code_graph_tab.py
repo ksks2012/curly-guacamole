@@ -21,7 +21,16 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
     graph_adapter = CodeGraphAdapter(limits=GraphLimits(max_nodes=120, max_edges=240))
     graph_lookup: dict[str, tuple[object, float, str]] = {}
     edge_lookup: dict[str, dict[str, Any]] = {}
-    graph_state = {"rerank_on": False, "hybrid_on": False, "serial": 0}
+    graph_state = {
+        "rerank_on": False,
+        "hybrid_on": False,
+        "serial": 0,
+        "layout": "breadthfirst",
+        "edge_type_filter": None,
+        "max_nodes_val": 120,
+        "max_edges_val": 240,
+        "last_payload": None,
+    }
 
     def _active_primary_results() -> list[tuple[object, float, str]]:
         if graph_state["rerank_on"] and ctrl.reranked_results:
@@ -76,11 +85,31 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             hybrid_toggle = ui.checkbox("Hybrid")
             relation_toggle = ui.checkbox("Relations", value=True)
 
+            ui.label("Layout:").classes("text-xs text-gray-600")
+            layout_select = ui.select(
+                label=None,
+                options={"breadthfirst": "Breadth-first", "cose": "COSE"}
+            ).classes("w-32").props("outlined dense")
+            layout_select.set_value("breadthfirst")
+
+            ui.label("Max Nodes:").classes("text-xs text-gray-600")
+            max_nodes_input = ui.number(
+                label=None, value=120, min=10, max=500, step=10
+            ).classes("w-24").props("outlined dense")
+
+            ui.label("Max Edges:").classes("text-xs text-gray-600")
+            max_edges_input = ui.number(
+                label=None, value=240, min=10, max=1000, step=10
+            ).classes("w-24").props("outlined dense")
+
             def do_search() -> None:
                 rerank_on = bool(rerank_toggle.value)
                 hybrid_on = bool(hybrid_toggle.value)
                 k = int(top_k_input.value or 5)
                 fetch_k = int(fetch_k_input.value or 20)
+                max_nodes = int(max_nodes_input.value or 120)
+                max_edges = int(max_edges_input.value or 240)
+                layout_val = str(layout_select.value or "breadthfirst")
 
                 ui.notify("Searching...", type="info", timeout=1500)
                 error = ctrl.run_search(
@@ -108,6 +137,10 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
                 graph_state["rerank_on"] = rerank_on
                 graph_state["hybrid_on"] = hybrid_on
+                graph_state["layout"] = layout_val
+                graph_state["max_nodes_val"] = max_nodes
+                graph_state["max_edges_val"] = max_edges
+                graph_adapter._limits = GraphLimits(max_nodes=max_nodes, max_edges=max_edges)
                 render_graph.refresh()
                 render_detail.refresh()
 
@@ -162,13 +195,32 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
                 graph_state["serial"] += 1
                 serial = graph_state["serial"]
+                graph_state["last_payload"] = payload
                 container_id = f"code-graph-canvas-tab-{serial}"
                 payload_json = json.dumps(payload.to_cytoscape(), ensure_ascii=True)
 
-                ui.label(
-                    f"Nodes: {payload.meta.get('node_count', len(payload.nodes))}"
-                    f"  Edges: {payload.meta.get('edge_count', len(payload.edges))}"
-                ).classes("text-xs text-gray-500 mb-2")
+                meta = payload.meta or {}
+                node_count = len(payload.nodes)
+                edge_count = len(payload.edges)
+                truncated_nodes = meta.get("truncated_nodes", False)
+                truncated_edges = meta.get("truncated_edges", False)
+                related_hit_rate = meta.get("related_count_hit_rate", 0.0)
+                relation_mode = "enriched" if bool(relation_toggle.value) else "vector-only"
+
+                meta_lines = [
+                    f"Nodes: {node_count}",
+                    f"Edges: {edge_count}",
+                    f"Layout: {graph_state['layout']}",
+                    f"Relation: {relation_mode}",
+                ]
+                if truncated_nodes:
+                    meta_lines.append("⚠ nodes truncated")
+                if truncated_edges:
+                    meta_lines.append("⚠ edges truncated")
+                if related_hit_rate >= 0:
+                    meta_lines.append(f"hit-rate: {related_hit_rate:.1%}")
+
+                ui.label(" | ".join(meta_lines)).classes("text-xs text-gray-500 mb-2")
 
                 ui.html(
                     f'<div id="{container_id}" '
@@ -237,7 +289,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                                 'text-background-padding': 1,
                             }} }},
                         ],
-                        layout: {{ name: 'breadthfirst', directed: true, padding: 20, spacingFactor: 1.05 }},
+                        layout: {{ name: {json.dumps(graph_state["layout"])}, directed: true, padding: 20, spacingFactor: 1.05 }},
                     }});
                     window.__codeGraphState.cy = cy;
                     cy.on('tap', 'node', (evt) => {{
