@@ -73,6 +73,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             ).classes("w-24")
             rerank_toggle = ui.checkbox("Rerank")
             hybrid_toggle = ui.checkbox("Hybrid")
+            relation_toggle = ui.checkbox("Relations", value=True)
 
             def do_search() -> None:
                 rerank_on = bool(rerank_toggle.value)
@@ -89,6 +90,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     use_hybrid=hybrid_on,
                     result_scope="code",
                     apply_filter=False,
+                    include_relations=bool(relation_toggle.value),
                 )
 
                 if error == "Query is empty.":

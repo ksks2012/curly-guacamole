@@ -161,6 +161,7 @@ class SearchController:
         use_hybrid: bool = False,
         result_scope: str = "all",
         apply_filter: bool = True,
+        include_relations: bool = False,
     ) -> str | None:
         """Execute a debug search and update internal state.
 
@@ -194,6 +195,7 @@ class SearchController:
                     k=k,
                     fetch_k=fetch_k,
                     use_rerank=use_rerank,
+                    include_relations=include_relations,
                 )
             else:
                 result = self._client.search_for_trace(

@@ -44,7 +44,32 @@ def test_adapter_maps_primary_and_related_nodes_edges():
     assert len(payload.nodes) == 2
     assert len(payload.edges) == 1
     assert payload.meta["primary_count"] == 1
+    assert payload.meta["related_primary_count"] == 1
+    assert payload.meta["related_count_hit_rate"] == 1.0
+    assert payload.meta["related_ref_count_before_limit"] == 1
     assert payload.meta["query"] == "How auth works?"
+
+
+def test_adapter_related_hit_rate_with_mixed_results():
+    with_rel = [
+        {
+            "target_id": "repo1::src/service.py::function::run",
+            "target_name": "run",
+            "target_file_path": "src/service.py",
+            "target_chunk_type": "function",
+            "edge_type": "CALLS",
+            "direction": "outgoing",
+            "score": 0.88,
+            "explain": "outgoing calls relation",
+        }
+    ]
+    r1 = _res("q1", "repo1::src/handler.py::function::handle", with_rel)
+    r2 = _res("q2", "repo1::src/empty.py::function::noop", [])
+
+    payload = CodeGraphAdapter().build([r1, r2], query="q")
+    assert payload.meta["primary_count"] == 2
+    assert payload.meta["related_primary_count"] == 1
+    assert payload.meta["related_count_hit_rate"] == 0.5
 
 
 def test_adapter_dedups_edges_by_signature():

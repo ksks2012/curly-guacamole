@@ -31,12 +31,19 @@ class CodeGraphAdapter:
     ) -> CodeGraphPayload:
         nodes_by_id: dict[str, CodeGraphNode] = {}
         edges_by_id: dict[str, CodeGraphEdge] = {}
+        primary_with_related = 0
+        related_ref_count = 0
 
         for r in results:
             source_id = str(r.metadata.get("chunk_id", "")).strip()
             if not source_id:
                 # Skip malformed records but keep contract stable.
                 continue
+
+            related_blocks = list(r.metadata.get("related_blocks", []) or [])
+            related_ref_count += len(related_blocks)
+            if related_blocks:
+                primary_with_related += 1
 
             source_node = self._make_node(
                 node_id=source_id,
@@ -53,7 +60,7 @@ class CodeGraphAdapter:
             )
             nodes_by_id[source_id] = source_node
 
-            for rel in list(r.metadata.get("related_blocks", []) or []):
+            for rel in related_blocks:
                 target_id = str(rel.get("target_id", "")).strip()
                 if not target_id:
                     continue
@@ -98,6 +105,11 @@ class CodeGraphAdapter:
             meta={
                 "query": query,
                 "primary_count": len(results),
+                "related_primary_count": primary_with_related,
+                "related_count_hit_rate": (
+                    round(primary_with_related / len(results), 4) if results else 0.0
+                ),
+                "related_ref_count_before_limit": related_ref_count,
                 "adapter": "CodeGraphAdapter",
                 "schema_version": 1,
             },
