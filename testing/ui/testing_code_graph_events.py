@@ -30,3 +30,16 @@ def test_normalize_missing_fields_defaults():
     assert ev.node_id == ""
     assert ev.edge_id == ""
     assert ev.payload == {}
+
+
+def test_normalize_edge_click_event():
+    ev = normalize_event(
+        {
+            "event": "edge_click",
+            "edge_id": "e1",
+            "payload": {"edge_type": "CALLS"},
+        }
+    )
+    assert ev.event == "edge_click"
+    assert ev.edge_id == "e1"
+    assert ev.payload["edge_type"] == "CALLS"

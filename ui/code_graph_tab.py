@@ -20,6 +20,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
     graph_adapter = CodeGraphAdapter(limits=GraphLimits(max_nodes=120, max_edges=240))
     graph_lookup: dict[str, tuple[object, float, str]] = {}
+    edge_lookup: dict[str, dict[str, Any]] = {}
     graph_state = {"rerank_on": False, "hybrid_on": False, "serial": 0}
 
     def _active_primary_results() -> list[tuple[object, float, str]]:
@@ -128,7 +129,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
             @ui.refreshable
             def render_graph() -> None:
-                nonlocal graph_lookup
+                nonlocal graph_lookup, edge_lookup
                 rows = _active_primary_results()
                 if not rows:
                     ui.label("Graph appears after search results are available.").classes(
@@ -144,6 +145,19 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     node.id: all_lookup[node.id]
                     for node in payload.nodes
                     if node.id in all_lookup
+                }
+                edge_lookup = {
+                    edge.id: {
+                        "id": edge.id,
+                        "source": edge.source,
+                        "target": edge.target,
+                        "edge_type": edge.edge_type,
+                        "direction": edge.direction,
+                        "score": edge.score,
+                        "explain": edge.explain,
+                        "metadata": dict(edge.metadata or {}),
+                    }
+                    for edge in payload.edges
                 }
 
                 graph_state["serial"] += 1
@@ -231,7 +245,27 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             serial,
                             event: 'node_click',
                             node_id: evt.target.id(),
+                            edge_id: '',
                             payload: evt.target.data(),
+                        }});
+                    }});
+                    cy.on('tap', 'edge', (evt) => {{
+                        window.__codeGraphQueue.push({{
+                            serial,
+                            event: 'edge_click',
+                            node_id: '',
+                            edge_id: evt.target.id(),
+                            payload: evt.target.data(),
+                        }});
+                    }});
+                    cy.on('tap', (evt) => {{
+                        if (evt.target !== cy) return;
+                        window.__codeGraphQueue.push({{
+                            serial,
+                            event: 'canvas_click',
+                            node_id: '',
+                            edge_id: '',
+                            payload: {{}},
                         }});
                     }});
                 }})();
@@ -253,10 +287,12 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     )
                     return
 
-                ui.label("Chunk detail").classes("text-sm font-semibold text-gray-700 mb-2")
+                detail_kind = str(meta.get("_detail_kind", "chunk"))
+                detail_title = "Edge detail" if detail_kind == "edge" else "Chunk detail"
+                ui.label(detail_title).classes("text-sm font-semibold text-gray-700 mb-2")
                 with ui.grid(columns=2).classes("gap-x-3 gap-y-0.5 text-xs w-full"):
                     for key, val in meta.items():
-                        if key == "_content":
+                        if key in {"_content", "_detail_kind"}:
                             continue
                         ui.label(key).classes("font-mono text-gray-400 text-right truncate")
                         ui.label(str(val)).classes("font-mono text-gray-800 break-all")
@@ -288,19 +324,31 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         except Exception:
             return
 
-        if event.event != "node_click":
-            return
-
-        node_id = str(event.node_id).strip()
-        if not node_id:
-            return
-
-        if ctrl.select_chunk_by_id(node_id):
+        if event.event == "node_click":
+            node_id = str(event.node_id).strip()
+            if not node_id:
+                return
+            node_data: dict[str, Any] = dict(event.payload or {})
+            if node_id in graph_lookup:
+                doc, score, score_key = graph_lookup[node_id]
+                ctrl.select_chunk(doc, score, score_key)
+            else:
+                ctrl.handle_graph_node_click(node_id, node_data)
             render_detail.refresh()
             return
 
-        node_data: dict[str, Any] = dict(event.payload or {})
-        ctrl.select_graph_node(node_data)
-        render_detail.refresh()
+        if event.event == "edge_click":
+            edge_id = str(event.edge_id).strip()
+            edge_data: dict[str, Any] = dict(event.payload or {})
+            if edge_id and edge_id in edge_lookup:
+                edge_data = dict(edge_lookup[edge_id])
+            ctrl.handle_graph_edge_click(edge_data)
+            render_detail.refresh()
+            return
+
+        if event.event == "canvas_click":
+            ctrl.handle_graph_canvas_click()
+            render_detail.refresh()
+            return
 
     ui.timer(0.25, _poll_graph_click_queue)

@@ -275,6 +275,7 @@ class SearchController:
     def select_graph_node(self, node_data: dict) -> None:
         """Select node metadata when graph node has no in-memory content."""
         self._metadata = {
+            "_detail_kind": "node",
             "graph_node_id": str(node_data.get("id", "")),
             "label": str(node_data.get("label", "")),
             "file_path": str(node_data.get("file_path", "")),
@@ -285,6 +286,48 @@ class SearchController:
             "_content": "Content unavailable in current result set.",
             **dict(node_data.get("metadata", {}) or {}),
         }
+
+    def select_graph_edge(self, edge_data: dict) -> None:
+        """Select edge metadata for graph relation inspection."""
+        meta = dict(edge_data.get("metadata", {}) or {})
+        explain = str(edge_data.get("explain", "") or "")
+        edge_types = meta.get("edge_types", [])
+        if not isinstance(edge_types, list):
+            edge_types = []
+
+        self._metadata = {
+            "_detail_kind": "edge",
+            "graph_edge_id": str(edge_data.get("id", "")),
+            "source_id": str(edge_data.get("source", "")),
+            "target_id": str(edge_data.get("target", "")),
+            "edge_type": str(edge_data.get("edge_type", "")),
+            "direction": str(edge_data.get("direction", "")),
+            "score": float(edge_data.get("score", 0.0) or 0.0),
+            "explain": explain,
+            "evidence_count": int(meta.get("evidence_count", 0) or 0),
+            "edge_types": edge_types,
+            "_content_len": len(explain),
+            "_content": explain or "No explanation available for this edge.",
+        }
+
+    def clear_selection(self) -> None:
+        """Clear selected detail metadata."""
+        self._metadata = {}
+
+    def handle_graph_node_click(self, node_id: str, node_data: dict) -> None:
+        """Handle node click by preferring in-memory chunk data and falling back to node payload."""
+        node_id = str(node_id or "").strip()
+        if node_id and self.select_chunk_by_id(node_id):
+            return
+        self.select_graph_node(node_data)
+
+    def handle_graph_edge_click(self, edge_data: dict) -> None:
+        """Handle edge click to show edge relation details."""
+        self.select_graph_edge(edge_data)
+
+    def handle_graph_canvas_click(self) -> None:
+        """Handle canvas click by resetting detail panel state."""
+        self.clear_selection()
 
     def select_code_block(self, row: dict) -> None:
         """Select a code block row for the shared detail panel."""
