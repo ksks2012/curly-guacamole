@@ -141,6 +141,7 @@ def build(
     *,
     result_scope: Literal["all", "document", "code"] = "document",
     title: str = "RAG Debug Dashboard",
+    enable_graph: bool = False,
 ) -> SimpleNamespace:
     """Build the complete Search tab content into the current NiceGUI context.
 
@@ -206,7 +207,7 @@ def build(
                 graph_state["rerank_on"] = bool(rerank_on)
                 graph_state["hybrid_on"] = bool(hybrid_on)
                 render_results.refresh(rerank_on, hybrid_on)
-                if result_scope == "code":
+                if result_scope == "code" and enable_graph:
                     render_graph.refresh()
                 render_detail.refresh()
                 for cb in _on_search:
@@ -518,7 +519,7 @@ def build(
 
                 render_results(False, False)
 
-            if result_scope == "code":
+            if result_scope == "code" and enable_graph:
                 with ui.card().style(
                     "flex: 1 1 42%; min-height: 0; overflow: hidden; padding: 0.75rem;"
                     " display: flex; flex-direction: column;"
@@ -652,7 +653,7 @@ def build(
                 if not meta:
                     empty_hint = (
                         "Click a result to inspect."
-                        if result_scope == "document"
+                        if result_scope == "document" or (result_scope == "code" and not enable_graph)
                         else "Click a result or graph node to inspect."
                     )
                     ui.label(empty_hint).classes("text-gray-400 italic text-sm")
@@ -678,7 +679,7 @@ def build(
 
             render_detail()
 
-    if result_scope == "code":
+    if result_scope == "code" and enable_graph:
         async def _poll_graph_click_queue() -> None:
             try:
                 event = await ui.run_javascript(

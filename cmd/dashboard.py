@@ -42,6 +42,7 @@ from ui.index_controller import IndexController
 from ui.config_controller import ConfigController
 from ui.knowledge_controller import KnowledgeController
 import ui.search_tab as search_tab_ui
+import ui.code_graph_tab as code_graph_tab_ui
 import ui.index_tab as index_tab_ui
 import ui.trace_tab as trace_tab_ui
 import ui.config_tab as config_tab_ui
@@ -91,6 +92,7 @@ def dashboard():
         ) as tabs:
             search_tab = ui.tab("Search").props("no-caps")
             code_search_tab = ui.tab("Code Search").props("no-caps")
+            code_graph_tab = ui.tab("Code Graph").props("no-caps")
             code_list_tab = ui.tab("Code List").props("no-caps")
             trace_tab  = ui.tab("Trace").props("no-caps")
             index_tab  = ui.tab("Index").props("no-caps")
@@ -124,7 +126,13 @@ def dashboard():
                     on_search=_on_search,
                     result_scope="code",
                     title="Code Search",
+                    enable_graph=False,
                 )
+
+            with ui.tab_panel(code_graph_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                code_graph_tab_ui.build(_ctrl, title="Code Graph")
 
             with ui.tab_panel(code_list_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
