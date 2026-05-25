@@ -6,20 +6,23 @@ Dedicated view for code graph rendering and node-focused inspection.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from nicegui import ui
 from rag.retrieval.base import RetrievalResult
 
 from ui import CodeGraphAdapter, GraphLimits, normalize_event
+from ui.code_graph_metrics import interaction_latency_p95_ms
 from ui.code_graph_presets import PRESETS
+from ui.code_graph_staged_view import DEFAULT_STAGE_KEY, apply_stage, get_stage, next_stage_key
 from ui.search_controller import RERANKER_UNAVAILABLE, SearchController
 
 
 def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
     """Build the standalone code graph tab."""
 
-    graph_adapter = CodeGraphAdapter(limits=GraphLimits(max_nodes=120, max_edges=240))
+    graph_adapter = CodeGraphAdapter(limits=GraphLimits(max_nodes=80, max_edges=160))
     graph_lookup: dict[str, tuple[object, float, str]] = {}
     edge_lookup: dict[str, dict[str, Any]] = {}
     graph_state = {
@@ -27,9 +30,13 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         "hybrid_on": False,
         "serial": 0,
         "layout": "breadthfirst",
+        "stage_mode": DEFAULT_STAGE_KEY,
         "edge_type_filter": None,
-        "max_nodes_val": 120,
-        "max_edges_val": 240,
+        "max_nodes_val": 80,
+        "max_edges_val": 160,
+        "dense_max_edges_val": 160,
+        "latency_samples_ms": {"sparse": [], "dense": []},
+        "latency_p95_ms": {"sparse": 0.0, "dense": 0.0},
         "last_payload": None,
     }
 
@@ -86,6 +93,19 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             hybrid_toggle = ui.checkbox("Hybrid")
             relation_toggle = ui.checkbox("Relations", value=True)
 
+            ui.label("View Flow:").classes("text-xs text-gray-600")
+            stage_select = ui.select(
+                label=None,
+                options={
+                    "sparse": "Stage 1: Sparse",
+                    "dense": "Stage 2: Enriched",
+                },
+            ).classes("w-40").props("outlined dense")
+            stage_select.set_value(DEFAULT_STAGE_KEY)
+
+            stage_status_label = ui.label("").classes("text-xs text-amber-700 min-w-[16rem]")
+            stage_switch_button = ui.button("Switch to Stage 2").props("outline")
+
             ui.label("Preset:").classes("text-xs text-gray-600")
             preset_select = ui.select(
                 label=None,
@@ -107,8 +127,51 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
             ui.label("Max Edges:").classes("text-xs text-gray-600")
             max_edges_input = ui.number(
-                label=None, value=240, min=10, max=1000, step=10
+                label=None, value=160, min=10, max=1000, step=10
             ).classes("w-24").props("outlined dense")
+
+            def _sync_stage_controls(*, update_dense_base: bool) -> None:
+                stage_key = str(stage_select.value or DEFAULT_STAGE_KEY)
+                graph_state["stage_mode"] = stage_key
+
+                if update_dense_base and stage_key == "dense":
+                    graph_state["dense_max_edges_val"] = int(max_edges_input.value or 160)
+
+                resolved = apply_stage(
+                    stage_key=stage_key,
+                    max_nodes=int(max_nodes_input.value or 80),
+                    dense_max_edges=int(graph_state["dense_max_edges_val"]),
+                    preferred_layout=str(layout_select.value or "breadthfirst"),
+                )
+
+                graph_state["max_nodes_val"] = resolved.max_nodes
+                graph_state["max_edges_val"] = resolved.max_edges
+                graph_state["layout"] = resolved.layout
+
+                max_nodes_input.set_value(resolved.max_nodes)
+                max_edges_input.set_value(resolved.max_edges)
+                layout_select.set_value(resolved.layout)
+                relation_toggle.set_value(resolved.relations_enabled)
+
+                stage = get_stage(stage_key)
+                p95 = float(graph_state["latency_p95_ms"].get(stage_key, 0.0) or 0.0)
+                stage_status_label.text = (
+                    f"{stage.label} | target overlap <= {stage.target_overlap_rate:.0%} | "
+                    f"readable >= {stage.target_readable_nodes} | p95 <= {stage.target_latency_p95_ms}ms | "
+                    f"current p95: {p95:.1f}ms"
+                )
+
+                if stage_key == "sparse":
+                    stage_switch_button.text = "Switch to Stage 2"
+                    stage_switch_button.props("outline color=amber")
+                else:
+                    stage_switch_button.text = "Stage 2 Active"
+                    stage_switch_button.props("outline color=green")
+
+            def _go_next_stage() -> None:
+                stage_select.set_value(next_stage_key(str(stage_select.value or DEFAULT_STAGE_KEY)))
+                _sync_stage_controls(update_dense_base=False)
+                ui.notify("Switched to enriched relation view.", type="positive", timeout=1200)
 
             def _apply_preset() -> None:
                 """Apply selected preset to UI controls."""
@@ -117,17 +180,26 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     preset = PRESETS[preset_key]
                     max_nodes_input.set_value(preset.max_nodes)
                     max_edges_input.set_value(preset.max_edges)
+                    graph_state["dense_max_edges_val"] = preset.max_edges
                     layout_select.set_value(preset.layout)
                     relation_toggle.set_value(preset.relations_enabled)
+                    stage_select.set_value("dense" if preset.relations_enabled else "sparse")
+                    _sync_stage_controls(update_dense_base=False)
 
             def do_search() -> None:
                 rerank_on = bool(rerank_toggle.value)
                 hybrid_on = bool(hybrid_toggle.value)
                 k = int(top_k_input.value or 5)
                 fetch_k = int(fetch_k_input.value or 20)
-                max_nodes = int(max_nodes_input.value or 120)
-                max_edges = int(max_edges_input.value or 240)
-                layout_val = str(layout_select.value or "breadthfirst")
+
+                if str(stage_select.value or DEFAULT_STAGE_KEY) == "dense":
+                    graph_state["dense_max_edges_val"] = int(max_edges_input.value or 160)
+                _sync_stage_controls(update_dense_base=False)
+
+                max_nodes = int(graph_state["max_nodes_val"] or 80)
+                max_edges = int(graph_state["max_edges_val"] or 160)
+                layout_val = str(graph_state["layout"] or "breadthfirst")
+                include_relations = bool(relation_toggle.value)
 
                 ui.notify("Searching...", type="info", timeout=1500)
                 error = ctrl.run_search(
@@ -138,7 +210,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     use_hybrid=hybrid_on,
                     result_scope="code",
                     apply_filter=False,
-                    include_relations=bool(relation_toggle.value),
+                    include_relations=include_relations,
                 )
 
                 if error == "Query is empty.":
@@ -159,11 +231,18 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 graph_state["max_nodes_val"] = max_nodes
                 graph_state["max_edges_val"] = max_edges
                 graph_adapter._limits = GraphLimits(max_nodes=max_nodes, max_edges=max_edges)
+
+                if str(stage_select.value or DEFAULT_STAGE_KEY) == "sparse":
+                    ui.notify("Sparse stage active. Switch to Stage 2 for enriched relation detail.", type="warning", timeout=1700)
                 render_graph.refresh()
                 render_detail.refresh()
 
             preset_select.on_value_change(lambda _: _apply_preset())
+            stage_select.on_value_change(lambda _: _sync_stage_controls(update_dense_base=False))
+            stage_switch_button.on_click(_go_next_stage)
+            max_edges_input.on_value_change(lambda _: _sync_stage_controls(update_dense_base=True))
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
+            _sync_stage_controls(update_dense_base=False)
 
         query_input.on("keydown.enter", do_search)
 
@@ -225,12 +304,15 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 truncated_edges = meta.get("truncated_edges", False)
                 related_hit_rate = meta.get("related_count_hit_rate", 0.0)
                 relation_mode = "enriched" if bool(relation_toggle.value) else "vector-only"
+                stage = get_stage(str(graph_state["stage_mode"]))
+                current_stage_p95 = float(graph_state["latency_p95_ms"].get(stage.key, 0.0) or 0.0)
 
                 meta_lines = [
                     f"Nodes: {node_count}",
                     f"Edges: {edge_count}",
                     f"Layout: {graph_state['layout']}",
                     f"Relation: {relation_mode}",
+                    f"Stage: {stage.label}",
                 ]
                 if truncated_nodes:
                     meta_lines.append("⚠ nodes truncated")
@@ -238,6 +320,8 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     meta_lines.append("⚠ edges truncated")
                 if related_hit_rate >= 0:
                     meta_lines.append(f"hit-rate: {related_hit_rate:.1%}")
+                if current_stage_p95 > 0:
+                    meta_lines.append(f"latency p95: {current_stage_p95:.1f}ms")
 
                 ui.label(" | ".join(meta_lines)).classes("text-xs text-gray-500 mb-2")
 
@@ -377,6 +461,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             render_detail()
 
     async def _poll_graph_click_queue() -> None:
+        event_start = time.perf_counter()
         try:
             raw_event = await ui.run_javascript(
                 "(function(){const q=window.__codeGraphQueue||[]; return q.length ? q.shift() : null;})()"
@@ -406,6 +491,8 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             else:
                 ctrl.handle_graph_node_click(node_id, node_data)
             render_detail.refresh()
+            elapsed_ms = (time.perf_counter() - event_start) * 1000.0
+            _record_latency(elapsed_ms)
             return
 
         if event.event == "edge_click":
@@ -415,11 +502,23 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 edge_data = dict(edge_lookup[edge_id])
             ctrl.handle_graph_edge_click(edge_data)
             render_detail.refresh()
+            elapsed_ms = (time.perf_counter() - event_start) * 1000.0
+            _record_latency(elapsed_ms)
             return
 
         if event.event == "canvas_click":
             ctrl.handle_graph_canvas_click()
             render_detail.refresh()
+            elapsed_ms = (time.perf_counter() - event_start) * 1000.0
+            _record_latency(elapsed_ms)
             return
+
+    def _record_latency(elapsed_ms: float) -> None:
+        stage_key = str(graph_state["stage_mode"])
+        bucket = graph_state["latency_samples_ms"].setdefault(stage_key, [])
+        bucket.append(float(elapsed_ms))
+        if len(bucket) > 300:
+            del bucket[:-300]
+        graph_state["latency_p95_ms"][stage_key] = interaction_latency_p95_ms(bucket)
 
     ui.timer(0.25, _poll_graph_click_queue)
