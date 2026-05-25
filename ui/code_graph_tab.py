@@ -12,6 +12,7 @@ from nicegui import ui
 from rag.retrieval.base import RetrievalResult
 
 from ui import CodeGraphAdapter, GraphLimits, normalize_event
+from ui.code_graph_presets import PRESETS
 from ui.search_controller import RERANKER_UNAVAILABLE, SearchController
 
 
@@ -85,6 +86,13 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             hybrid_toggle = ui.checkbox("Hybrid")
             relation_toggle = ui.checkbox("Relations", value=True)
 
+            ui.label("Preset:").classes("text-xs text-gray-600")
+            preset_select = ui.select(
+                label=None,
+                options={"small": "Small", "medium": "Medium", "large": "Large", "custom": "Custom"}
+            ).classes("w-32").props("outlined dense")
+            preset_select.set_value("medium")
+
             ui.label("Layout:").classes("text-xs text-gray-600")
             layout_select = ui.select(
                 label=None,
@@ -101,6 +109,16 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             max_edges_input = ui.number(
                 label=None, value=240, min=10, max=1000, step=10
             ).classes("w-24").props("outlined dense")
+
+            def _apply_preset() -> None:
+                """Apply selected preset to UI controls."""
+                preset_key = str(preset_select.value or "custom").lower()
+                if preset_key in PRESETS:
+                    preset = PRESETS[preset_key]
+                    max_nodes_input.set_value(preset.max_nodes)
+                    max_edges_input.set_value(preset.max_edges)
+                    layout_select.set_value(preset.layout)
+                    relation_toggle.set_value(preset.relations_enabled)
 
             def do_search() -> None:
                 rerank_on = bool(rerank_toggle.value)
@@ -144,6 +162,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 render_graph.refresh()
                 render_detail.refresh()
 
+            preset_select.on_value_change(lambda _: _apply_preset())
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
 
         query_input.on("keydown.enter", do_search)
