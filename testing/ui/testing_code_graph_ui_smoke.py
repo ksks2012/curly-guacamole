@@ -133,3 +133,27 @@ def test_code_graph_tab_build_requires_controller():
 
     sig = inspect.signature(build)
     assert "ctrl" in sig.parameters
+
+
+def test_code_graph_tab_mentions_soft_scope_query_hints():
+    """Verify code graph tab exposes repo/path/module query hint guidance."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "repo:<repo-id>" in source
+    assert "path:<path-fragment>" in source
+    assert "module:<module-prefix>" in source
+
+
+def test_search_tab_mentions_soft_scope_query_hints_for_code_scope():
+    """Verify shared search tab documents soft scope query conventions."""
+    from ui.search_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "repo:payments" in source
+    assert "path:src/payments" in source
+    assert "module:payments.service" in source

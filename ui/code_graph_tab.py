@@ -80,7 +80,9 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         ui.label(title).classes("text-lg font-bold text-gray-800 mb-2")
 
         with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-            query_input = ui.input(placeholder="Enter your code query...").classes(
+            query_input = ui.input(
+                placeholder="Enter code query, e.g. repo:payments path:src/payments module:payments.service find caller"
+            ).classes(
                 "flex-1 min-w-[12rem]"
             )
             fetch_k_input = ui.number(
@@ -243,6 +245,10 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             max_edges_input.on_value_change(lambda _: _sync_stage_controls(update_dense_base=True))
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
             _sync_stage_controls(update_dense_base=False)
+
+        ui.label(
+            "Soft scope hints: repo:<repo-id> path:<path-fragment> module:<module-prefix>. These boost ranking only."
+        ).classes("text-xs text-gray-500 mt-2")
 
         query_input.on("keydown.enter", do_search)
 

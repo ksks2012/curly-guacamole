@@ -28,6 +28,7 @@ from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import PipelineBuilder
 from rag.retrieval.base import RetrievalResult
+from rag.retrieval.code_query_scope import parse_code_query_scope, rerank_code_rows_by_scope
 from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
@@ -451,6 +452,8 @@ class LocalLlamaClient:
         Returns a dashboard-compatible payload:
             {"vector", "bm25", "hybrid", "reranked", "trace"}
         """
+        query_scope = parse_code_query_scope(query)
+        semantic_query = query_scope.semantic_query or query
         raw: list[tuple[Document, float]] = []
         for persist_dir in self._code_block_persist_dirs():
             try:
@@ -468,7 +471,7 @@ class LocalLlamaClient:
                 continue
 
             try:
-                raw = block_db.similarity_search_with_score(query, k=fetch_k)
+                raw = block_db.similarity_search_with_score(semantic_query, k=fetch_k)
             except Exception as exc:
                 log.warning("search_code_blocks: query failed dir=%s error=%s", persist_dir, exc)
                 continue
@@ -480,14 +483,15 @@ class LocalLlamaClient:
             return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
 
         vector = [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
+        vector = rerank_code_rows_by_scope(vector, query_scope)
 
         if include_relations:
-            vector = self._enrich_code_results_with_relations(query=query, rows=vector)
+            vector = self._enrich_code_results_with_relations(query=semantic_query, rows=vector)
 
         reranked = None
         if use_rerank and self.reranker is not None:
             reranked = self.reranker.rerank_with_scores(
-                query,
+                semantic_query,
                 [doc for doc, _ in vector],
                 top_k=k,
             )

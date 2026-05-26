@@ -166,7 +166,14 @@ def build(
 
         # Row 1: search controls
         with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-            query_input   = ui.input(placeholder="Enter your query\u2026").classes(
+            query_placeholder = "Enter your query\u2026"
+            if result_scope == "code":
+                query_placeholder = (
+                    "Enter code query, e.g. repo:payments path:src/payments "
+                    "module:payments.service find caller"
+                )
+
+            query_input   = ui.input(placeholder=query_placeholder).classes(
                 "flex-1 min-w-[12rem]"
             )
             fetch_k_input = ui.number(
@@ -216,6 +223,11 @@ def build(
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
 
         query_input.on("keydown.enter", do_search)
+
+        if result_scope == "code":
+            ui.label(
+                "Soft scope hints: repo:<repo-id> path:<path-fragment> module:<module-prefix>. These boost ranking only."
+            ).classes("text-xs text-gray-500 mt-2")
 
         if result_scope == "document":
             # Row 2: filter toggle + active-filter summary
