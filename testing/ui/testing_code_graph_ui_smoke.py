@@ -215,3 +215,100 @@ def test_code_graph_tab_shows_edge_type_summary_in_meta():
     source = inspect.getsource(build)
     assert "edge_type_counts" in source
     assert "edge-types:" in source
+
+
+def test_code_graph_tab_exposes_edge_type_filter_controls():
+    """Verify code graph tab exposes per-edge-type visibility controls."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "ALL_EDGE_TYPES" in source
+    assert "Edge types:" in source
+    assert "ui.button(\"All\"" in source
+    assert "ui.button(\"None\"" in source
+
+
+def test_code_graph_tab_uses_edge_class_selectors_for_rendering():
+    """Verify code graph tab maps edge types to Cytoscape classes."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "edgeClass" in source
+    assert "edge-calls" in source
+    assert "edge-imports" in source
+    assert "edge-extends" in source
+
+
+def test_code_graph_tab_does_not_force_disable_relations_in_search_sync():
+    """Verify stage sync does not override relation toggle before searching."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "_sync_stage_controls(update_dense_base=False, sync_relation_toggle=False)" in source
+    assert "stage_select.on_value_change(lambda _: _sync_stage_controls(update_dense_base=False, sync_relation_toggle=True))" in source
+
+
+def test_code_graph_tab_formats_graphstore_debug_text_like_debug_tool():
+    """Verify the debug text mirrors edge_debug.py row formatting."""
+    from ui.code_graph_tab import _format_edge_debug_text
+
+    class Row:
+        def __init__(self):
+            self.edge_id = "e1"
+            self.edge_type = "CALLS"
+            self.src_id = "src"
+            self.dst_id = "dst"
+            self.file_path = "a.py"
+            self.line_no = 12
+
+    text = _format_edge_debug_text(
+        repo_id="langchain-test",
+        graph_db_path="/tmp/graph.db",
+        rows=[Row()],
+    )
+
+    assert text.splitlines()[0] == "repo_id=langchain-test count=1 graph_db=/tmp/graph.db"
+    assert text.splitlines()[1] == "e1\tCALLS\tsrc\tdst\ta.py:12"
+
+
+def test_code_graph_tab_exposes_graphstore_debug_panel():
+    """Verify the code graph tab renders a GraphStore debug panel."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "GraphStore debug output" in source
+    assert "Matches debug_tools/edge_debug.py text output" in source
+
+
+def test_code_graph_tab_exposes_relation_enrichment_diagnostics():
+    """Verify the code graph tab renders per-result relation enrichment info."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "Relation enrichment diagnostics" in source
+    assert "related_blocks" in source
+    assert "edge_type" in source
+    assert "mapping_strategy" in source
+
+
+def test_fetch_block_metadata_fallthrough_bug_is_fixed():
+    """Verify _fetch_block_metadata falls through to symbol-key on block_fetcher miss."""
+    from rag.retrieval.related_code_retriever import RelatedCodeRetriever
+    import inspect
+
+    source = inspect.getsource(RelatedCodeRetriever._fetch_block_metadata)
+    # Old code: if meta is None: return None
+    # Fixed code: should NOT return None immediately when block_fetcher returns None
+    assert "if meta is None:\n                return None" not in source
+    # Should fall through to symbol-key path
+    assert "fall through" in source
