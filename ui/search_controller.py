@@ -445,6 +445,14 @@ class SearchController:
                 out.append(row)
         return out
 
+    def list_code_repo_ids(self) -> list[str]:
+        """Return all known code repo ids for UI selection controls."""
+        try:
+            return self._client.list_code_repo_ids()
+        except Exception as e:
+            log.error("list_code_repo_ids failed: %s", e)
+            return []
+
     # ------------------------------------------------------------------
     # Pure helpers (no state, safe to call as static methods)
     # ------------------------------------------------------------------

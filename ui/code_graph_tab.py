@@ -37,6 +37,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         "dense_max_edges_val": 160,
         "latency_samples_ms": {"sparse": [], "dense": []},
         "latency_p95_ms": {"sparse": 0.0, "dense": 0.0},
+        "repo_options": {},
         "last_payload": None,
     }
 
@@ -76,6 +77,55 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             )
         return out
 
+    def _split_connected_components(cytoscape_payload: dict[str, list[dict]]) -> list[dict[str, list[dict]]]:
+        """Split graph payload into weakly connected components."""
+        nodes = list(cytoscape_payload.get("nodes") or [])
+        edges = list(cytoscape_payload.get("edges") or [])
+        if not nodes:
+            return []
+
+        node_by_id: dict[str, dict] = {}
+        for node in nodes:
+            node_id = str((node.get("data") or {}).get("id", "")).strip()
+            if node_id:
+                node_by_id[node_id] = node
+
+        adjacency: dict[str, set[str]] = {node_id: set() for node_id in node_by_id}
+        edge_records: list[tuple[str, str, dict]] = []
+        for edge in edges:
+            data = dict(edge.get("data") or {})
+            src = str(data.get("source", "")).strip()
+            dst = str(data.get("target", "")).strip()
+            if not src or not dst:
+                continue
+            if src in adjacency and dst in adjacency:
+                adjacency[src].add(dst)
+                adjacency[dst].add(src)
+                edge_records.append((src, dst, edge))
+
+        components: list[set[str]] = []
+        visited: set[str] = set()
+        for start_id in node_by_id:
+            if start_id in visited:
+                continue
+            stack = [start_id]
+            component: set[str] = set()
+            while stack:
+                current = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                component.add(current)
+                stack.extend(nei for nei in adjacency.get(current, set()) if nei not in visited)
+            components.append(component)
+
+        out: list[dict[str, list[dict]]] = []
+        for component in sorted(components, key=lambda c: len(c), reverse=True):
+            comp_nodes = [node_by_id[nid] for nid in component if nid in node_by_id]
+            comp_edges = [edge for src, dst, edge in edge_records if src in component and dst in component]
+            out.append({"nodes": comp_nodes, "edges": comp_edges})
+        return out
+
     with ui.card().classes("w-full rounded-none shadow-md p-3").style("flex-shrink: 0;"):
         ui.label(title).classes("text-lg font-bold text-gray-800 mb-2")
 
@@ -94,6 +144,22 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             rerank_toggle = ui.checkbox("Rerank")
             hybrid_toggle = ui.checkbox("Hybrid")
             relation_toggle = ui.checkbox("Relations", value=True)
+
+            repo_select = ui.select(label=None, options={"": "All Repos"}).classes("w-44").props("outlined dense")
+            repo_select.set_value("")
+
+            def _refresh_repo_options() -> None:
+                repo_ids = ctrl.list_code_repo_ids()
+                options = {"": "All Repos"}
+                for repo_id in repo_ids:
+                    options[repo_id] = repo_id
+                graph_state["repo_options"] = options
+                repo_select.set_options(options)
+                current_repo = str(repo_select.value or "")
+                if current_repo and current_repo not in options:
+                    repo_select.set_value("")
+
+            ui.button("Reload Repos", on_click=_refresh_repo_options).props("outline dense")
 
             ui.label("View Flow:").classes("text-xs text-gray-600")
             stage_select = ui.select(
@@ -193,6 +259,11 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 hybrid_on = bool(hybrid_toggle.value)
                 k = int(top_k_input.value or 5)
                 fetch_k = int(fetch_k_input.value or 20)
+                selected_repo = str(repo_select.value or "").strip()
+                user_query = str(query_input.value or "").strip()
+
+                if selected_repo and "repo:" not in user_query.lower():
+                    user_query = f"repo:{selected_repo} {user_query}".strip()
 
                 if str(stage_select.value or DEFAULT_STAGE_KEY) == "dense":
                     graph_state["dense_max_edges_val"] = int(max_edges_input.value or 160)
@@ -205,7 +276,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
                 ui.notify("Searching...", type="info", timeout=1500)
                 error = ctrl.run_search(
-                    query_input.value,
+                    user_query,
                     k,
                     fetch_k,
                     use_rerank=rerank_on,
@@ -245,6 +316,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             max_edges_input.on_value_change(lambda _: _sync_stage_controls(update_dense_base=True))
             ui.button("Search", on_click=do_search).classes("bg-blue-600 text-white px-6")
             _sync_stage_controls(update_dense_base=False)
+            _refresh_repo_options()
 
         ui.label(
             "Soft scope hints: repo:<repo-id> path:<path-fragment> module:<module-prefix>. These boost ranking only."
@@ -253,11 +325,11 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         query_input.on("keydown.enter", do_search)
 
     with ui.element("div").style(
-        "flex: 1; min-height: 0; display: flex; flex-direction: row;"
+        "flex: 0 0 auto; height: 40rem; min-height: 40rem; display: flex; flex-direction: row;"
         " gap: 0.75rem; padding: 0.75rem; overflow: hidden; align-items: stretch;"
     ):
         with ui.card().style(
-            "flex: 1 1 42rem; min-height: 0; overflow: hidden; padding: 0.75rem;"
+            "flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 0.75rem;"
             " display: flex; flex-direction: column;"
         ):
             ui.label("Code Graph (Cytoscape)").classes(
@@ -300,8 +372,9 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 graph_state["serial"] += 1
                 serial = graph_state["serial"]
                 graph_state["last_payload"] = payload
-                container_id = f"code-graph-canvas-tab-{serial}"
-                payload_json = json.dumps(payload.to_cytoscape(), ensure_ascii=True)
+                payload_json = payload.to_cytoscape()
+                components = _split_connected_components(payload_json)
+                payload_components_json = json.dumps(components, ensure_ascii=True)
 
                 meta = payload.meta or {}
                 node_count = len(payload.nodes)
@@ -316,6 +389,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 meta_lines = [
                     f"Nodes: {node_count}",
                     f"Edges: {edge_count}",
+                    f"Graphs: {len(components)}",
                     f"Layout: {graph_state['layout']}",
                     f"Relation: {relation_mode}",
                     f"Stage: {stage.label}",
@@ -331,27 +405,43 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
 
                 ui.label(" | ".join(meta_lines)).classes("text-xs text-gray-500 mb-2")
 
-                ui.html(
-                    f'<div id="{container_id}" '
-                    'style="width:100%;height:100%;min-height:300px;border:1px solid #e5e7eb;border-radius:8px;"></div>'
-                ).classes("w-full h-full")
+                with ui.element("div").classes("w-full").style(
+                    "flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:0.75rem;"
+                ):
+                    for index, component in enumerate(components):
+                        component_nodes = len(component.get("nodes") or [])
+                        component_edges = len(component.get("edges") or [])
+                        ui.label(f"Graph {index + 1}: {component_nodes} nodes / {component_edges} edges").classes(
+                            "text-xs text-gray-500"
+                        )
+                        component_id = f"code-graph-canvas-tab-{serial}-{index}"
+                        ui.html(
+                            f'<div id="{component_id}" '
+                            'style="width:100%;height:280px;min-height:280px;border:1px solid #e5e7eb;border-radius:8px;"></div>'
+                        ).classes("w-full")
 
                 init_graph_js = f"""
                 (function() {{
-                    const payload = {payload_json};
+                    const payloads = {payload_components_json};
                     const serial = {serial};
-                    const root = document.getElementById({json.dumps(container_id)});
-                    if (!root) return;
                     if (!window.cytoscape) {{
-                        root.innerHTML = '<div style="padding:12px;color:#6b7280;font-size:12px;">Cytoscape.js is loading...</div>';
+                        for (let i = 0; i < payloads.length; i += 1) {{
+                            const fallback = document.getElementById(`code-graph-canvas-tab-${{serial}}-${{i}}`);
+                            if (fallback) {{
+                                fallback.innerHTML = '<div style="padding:12px;color:#6b7280;font-size:12px;">Cytoscape.js is loading...</div>';
+                            }}
+                        }}
                         return;
                     }}
 
                     window.__codeGraphQueue = window.__codeGraphQueue || [];
-                    window.__codeGraphState = window.__codeGraphState || {{ cy: null }};
-                    if (window.__codeGraphState.cy) {{
-                        window.__codeGraphState.cy.destroy();
+                    window.__codeGraphState = window.__codeGraphState || {{ cys: [] }};
+                    if (Array.isArray(window.__codeGraphState.cys)) {{
+                        for (const prevCy of window.__codeGraphState.cys) {{
+                            try {{ prevCy.destroy(); }} catch (_e) {{}}
+                        }}
                     }}
+                    window.__codeGraphState.cys = [];
 
                     const edgeColor = (t) => ({{
                         CALLS: '#2563eb',
@@ -361,74 +451,80 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         NEARBY: '#64748b',
                     }}[t] || '#64748b');
 
-                    const cy = window.cytoscape({{
-                        container: root,
-                        elements: [...payload.nodes, ...payload.edges],
-                        style: [
-                            {{ selector: 'node', style: {{
-                                'label': 'data(label)',
-                                'font-size': '10px',
-                                'color': '#111827',
-                                'text-wrap': 'wrap',
-                                'text-max-width': 120,
-                                'background-color': '#dbeafe',
-                                'border-width': 1,
-                                'border-color': '#60a5fa',
-                                'width': 28,
-                                'height': 28,
-                            }} }},
-                            {{ selector: 'node[is_primary = true]', style: {{
-                                'background-color': '#bfdbfe',
-                                'border-color': '#2563eb',
-                                'border-width': 2,
-                                'width': 34,
-                                'height': 34,
-                            }} }},
-                            {{ selector: 'edge', style: {{
-                                'curve-style': 'bezier',
-                                'target-arrow-shape': 'triangle',
-                                'line-color': (e) => edgeColor(e.data('edge_type')),
-                                'target-arrow-color': (e) => edgeColor(e.data('edge_type')),
-                                'width': (e) => Math.max(1.5, Math.min(6, (Number(e.data('score')) || 0.1) * 6)),
-                                'label': 'data(edge_type)',
-                                'font-size': '8px',
-                                'color': '#6b7280',
-                                'text-background-color': '#ffffff',
-                                'text-background-opacity': 0.75,
-                                'text-background-padding': 1,
-                            }} }},
-                        ],
-                        layout: {{ name: {json.dumps(graph_state["layout"])}, directed: true, padding: 20, spacingFactor: 1.05 }},
-                    }});
-                    window.__codeGraphState.cy = cy;
-                    cy.on('tap', 'node', (evt) => {{
-                        window.__codeGraphQueue.push({{
-                            serial,
-                            event: 'node_click',
-                            node_id: evt.target.id(),
-                            edge_id: '',
-                            payload: evt.target.data(),
+                    for (let i = 0; i < payloads.length; i += 1) {{
+                        const payload = payloads[i] || {{ nodes: [], edges: [] }};
+                        const root = document.getElementById(`code-graph-canvas-tab-${{serial}}-${{i}}`);
+                        if (!root) continue;
+
+                        const cy = window.cytoscape({{
+                            container: root,
+                            elements: [...payload.nodes, ...payload.edges],
+                            style: [
+                                {{ selector: 'node', style: {{
+                                    'label': 'data(label)',
+                                    'font-size': '10px',
+                                    'color': '#111827',
+                                    'text-wrap': 'wrap',
+                                    'text-max-width': 120,
+                                    'background-color': '#dbeafe',
+                                    'border-width': 1,
+                                    'border-color': '#60a5fa',
+                                    'width': 28,
+                                    'height': 28,
+                                }} }},
+                                {{ selector: 'node[is_primary = true]', style: {{
+                                    'background-color': '#bfdbfe',
+                                    'border-color': '#2563eb',
+                                    'border-width': 2,
+                                    'width': 34,
+                                    'height': 34,
+                                }} }},
+                                {{ selector: 'edge', style: {{
+                                    'curve-style': 'bezier',
+                                    'target-arrow-shape': 'triangle',
+                                    'line-color': (e) => edgeColor(e.data('edge_type')),
+                                    'target-arrow-color': (e) => edgeColor(e.data('edge_type')),
+                                    'width': (e) => Math.max(1.5, Math.min(6, (Number(e.data('score')) || 0.1) * 6)),
+                                    'label': 'data(edge_type)',
+                                    'font-size': '8px',
+                                    'color': '#6b7280',
+                                    'text-background-color': '#ffffff',
+                                    'text-background-opacity': 0.75,
+                                    'text-background-padding': 1,
+                                }} }},
+                            ],
+                            layout: {{ name: {json.dumps(graph_state["layout"])}, directed: true, padding: 20, spacingFactor: 1.05 }},
                         }});
-                    }});
-                    cy.on('tap', 'edge', (evt) => {{
-                        window.__codeGraphQueue.push({{
-                            serial,
-                            event: 'edge_click',
-                            node_id: '',
-                            edge_id: evt.target.id(),
-                            payload: evt.target.data(),
+                        window.__codeGraphState.cys.push(cy);
+                        cy.on('tap', 'node', (evt) => {{
+                            window.__codeGraphQueue.push({{
+                                serial,
+                                event: 'node_click',
+                                node_id: evt.target.id(),
+                                edge_id: '',
+                                payload: evt.target.data(),
+                            }});
                         }});
-                    }});
-                    cy.on('tap', (evt) => {{
-                        if (evt.target !== cy) return;
-                        window.__codeGraphQueue.push({{
-                            serial,
-                            event: 'canvas_click',
-                            node_id: '',
-                            edge_id: '',
-                            payload: {{}},
+                        cy.on('tap', 'edge', (evt) => {{
+                            window.__codeGraphQueue.push({{
+                                serial,
+                                event: 'edge_click',
+                                node_id: '',
+                                edge_id: evt.target.id(),
+                                payload: evt.target.data(),
+                            }});
                         }});
-                    }});
+                        cy.on('tap', (evt) => {{
+                            if (evt.target !== cy) return;
+                            window.__codeGraphQueue.push({{
+                                serial,
+                                event: 'canvas_click',
+                                node_id: '',
+                                edge_id: '',
+                                payload: {{}},
+                            }});
+                        }});
+                    }}
                 }})();
                 """
                 ui.timer(0.05, lambda js=init_graph_js: ui.run_javascript(js), once=True)
@@ -436,7 +532,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
             render_graph()
 
         with ui.card().style(
-            "flex: 1 1 22rem; min-width: 20rem; max-width: 30rem;"
+            "flex: 0 0 26rem; width: 26rem; min-width: 26rem; max-width: 26rem;"
             " min-height: 0; height: 100%; overflow-y: auto; padding: 0.75rem;"
         ):
             @ui.refreshable

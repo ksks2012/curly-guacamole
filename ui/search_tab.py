@@ -533,7 +533,7 @@ def build(
 
             if result_scope == "code" and enable_graph:
                 with ui.card().style(
-                    "flex: 1 1 42%; min-height: 0; overflow: hidden; padding: 0.75rem;"
+                    "flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; overflow: hidden; padding: 0.75rem;"
                     " display: flex; flex-direction: column;"
                 ):
                     ui.label("Code Graph (Cytoscape)").classes(

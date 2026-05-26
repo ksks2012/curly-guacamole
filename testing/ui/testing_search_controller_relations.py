@@ -30,6 +30,9 @@ class _FakeClient:
     def search_for_trace(self, *args, **kwargs):
         raise AssertionError("search_for_trace should not be called for code scope")
 
+    def list_code_repo_ids(self):
+        return ["repo-a", "repo-b"]
+
 
 def test_run_search_passes_include_relations_true_for_code_scope():
     client = _FakeClient()
@@ -66,3 +69,11 @@ def test_run_search_defaults_include_relations_false():
     assert error is None
     assert len(client.calls) == 1
     assert client.calls[0]["include_relations"] is False
+
+
+def test_list_code_repo_ids_forwards_to_client():
+    client = _FakeClient()
+    ctrl = SearchController(client)
+
+    repo_ids = ctrl.list_code_repo_ids()
+    assert repo_ids == ["repo-a", "repo-b"]

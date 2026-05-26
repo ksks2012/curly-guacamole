@@ -157,3 +157,49 @@ def test_search_tab_mentions_soft_scope_query_hints_for_code_scope():
     assert "repo:payments" in source
     assert "path:src/payments" in source
     assert "module:payments.service" in source
+
+
+def test_search_tab_embedded_graph_panel_fills_result_column_width():
+    """Verify embedded graph panel uses full width within the result column."""
+    from ui.search_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "width: 100%" in source
+    assert "min-width: 0" in source
+
+
+def test_code_graph_tab_has_repo_dropdown_selection_flow():
+    """Verify code graph tab uses repo dropdown options from controller."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "repo_select = ui.select" in source
+    assert "ctrl.list_code_repo_ids()" in source
+    assert "repo:" in source
+
+
+def test_code_graph_tab_uses_fixed_graph_and_detail_panel_sizes():
+    """Verify graph and detail panel dimensions are fixed for stable rendering."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "height: 40rem" in source
+    assert "width: 26rem" in source
+
+
+def test_code_graph_tab_splits_connected_components_into_multiple_graphs():
+    """Verify connected components are rendered as separate graph canvases."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "_split_connected_components" in source
+    assert "Graphs:" in source
+    assert "for (let i = 0; i < payloads.length; i += 1)" in source

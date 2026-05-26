@@ -438,6 +438,37 @@ class LocalLlamaClient:
 
         return []
 
+    def list_code_repo_ids(self, *, limit: int = 5000) -> list[str]:
+        """Return distinct repo_id values found in ``code_block`` metadata."""
+        out: set[str] = set()
+        for persist_dir in self._code_block_persist_dirs():
+            try:
+                block_db = Chroma(
+                    persist_directory=persist_dir,
+                    embedding_function=self.embed,
+                    collection_name="code_block",
+                )
+            except Exception as exc:
+                log.warning(
+                    "list_code_repo_ids: cannot open code_block collection dir=%s error=%s",
+                    persist_dir,
+                    exc,
+                )
+                continue
+
+            try:
+                raw = block_db.get(include=["metadatas"], limit=max(1, int(limit)))
+            except Exception as exc:
+                log.warning("list_code_repo_ids: query failed dir=%s error=%s", persist_dir, exc)
+                continue
+
+            for meta in (raw.get("metadatas") or []):
+                repo_id = str((meta or {}).get("repo_id", "")).strip()
+                if repo_id:
+                    out.add(repo_id)
+
+        return sorted(out)
+
     def search_code_blocks(
         self,
         query: str,
