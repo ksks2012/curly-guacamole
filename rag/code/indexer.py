@@ -92,6 +92,22 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def _truncate_for_embedding(text: str, *, max_chars: int = 12000) -> tuple[str, bool]:
+    """Return embedding-safe text while preserving both start and end context.
+
+    Some embedding backends enforce hard token limits and reject very large
+    code blocks. For oversized inputs, keep a head/tail window with a marker
+    so indexing can proceed deterministically.
+    """
+    if len(text) <= max_chars:
+        return text, False
+
+    head = int(max_chars * 0.75)
+    tail = max_chars - head
+    marker = "\n\n# ... truncated for embedding safety ...\n\n"
+    return text[:head] + marker + text[-tail:], True
+
+
 # ---------------------------------------------------------------------------
 # CodeIndexer
 # ---------------------------------------------------------------------------
@@ -417,9 +433,23 @@ class CodeIndexer(BaseIndexer):
         repo_id = chunks[0].repo_id if chunks else ""
 
         for chunk in chunks:
+            safe_text, is_truncated = _truncate_for_embedding(chunk.code)
+            metadata = chunk.to_meta()
+            if is_truncated:
+                metadata = dict(metadata)
+                metadata["content_truncated"] = True
+                metadata["content_chars"] = len(chunk.code)
+                log.debug(
+                    "CodeIndexer[block] truncated oversized chunk for embedding: repo=%s file=%s name=%s chars=%d",
+                    chunk.repo_id,
+                    chunk.file_path,
+                    chunk.name,
+                    len(chunk.code),
+                )
+
             doc = Document(
-                page_content=chunk.code,
-                metadata=chunk.to_meta(),
+                page_content=safe_text,
+                metadata=metadata,
             )
             docs.append(doc)
             ids.append(chunk.chunk_id)
