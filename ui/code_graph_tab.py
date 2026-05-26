@@ -325,11 +325,11 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         query_input.on("keydown.enter", do_search)
 
     with ui.element("div").style(
-        "flex: 0 0 auto; height: 40rem; min-height: 40rem; display: flex; flex-direction: row;"
+        "flex: 1 1 auto; width: 100%; max-width: 100%; height: 40rem; min-height: 40rem; display: flex; flex-direction: row;"
         " gap: 0.75rem; padding: 0.75rem; overflow: hidden; align-items: stretch;"
     ):
         with ui.card().style(
-            "flex: 1 1 auto; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 0.75rem;"
+            "flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 0.75rem;"
             " display: flex; flex-direction: column;"
         ):
             ui.label("Code Graph (Cytoscape)").classes(
@@ -379,6 +379,10 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 meta = payload.meta or {}
                 node_count = len(payload.nodes)
                 edge_count = len(payload.edges)
+                edge_type_counts: dict[str, int] = {}
+                for edge in payload.edges:
+                    edge_type = str(edge.edge_type or "UNKNOWN")
+                    edge_type_counts[edge_type] = edge_type_counts.get(edge_type, 0) + 1
                 truncated_nodes = meta.get("truncated_nodes", False)
                 truncated_edges = meta.get("truncated_edges", False)
                 related_hit_rate = meta.get("related_count_hit_rate", 0.0)
@@ -402,6 +406,11 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     meta_lines.append(f"hit-rate: {related_hit_rate:.1%}")
                 if current_stage_p95 > 0:
                     meta_lines.append(f"latency p95: {current_stage_p95:.1f}ms")
+                if edge_type_counts:
+                    edge_type_summary = ", ".join(
+                        f"{edge_type}:{count}" for edge_type, count in sorted(edge_type_counts.items())
+                    )
+                    meta_lines.append(f"edge-types: {edge_type_summary}")
 
                 ui.label(" | ".join(meta_lines)).classes("text-xs text-gray-500 mb-2")
 
@@ -417,7 +426,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         component_id = f"code-graph-canvas-tab-{serial}-{index}"
                         ui.html(
                             f'<div id="{component_id}" '
-                            'style="width:100%;height:280px;min-height:280px;border:1px solid #e5e7eb;border-radius:8px;"></div>'
+                            'style="width:100%;height:420px;min-height:420px;border:1px solid #e5e7eb;border-radius:8px;"></div>'
                         ).classes("w-full")
 
                 init_graph_js = f"""
@@ -547,6 +556,17 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 detail_kind = str(meta.get("_detail_kind", "chunk"))
                 detail_title = "Edge detail" if detail_kind == "edge" else "Chunk detail"
                 ui.label(detail_title).classes("text-sm font-semibold text-gray-700 mb-2")
+                
+                # NEARBY-only diagnostic warning
+                edge_type = meta.get("edge_type", "")
+                if edge_type == "NEARBY":
+                    with ui.card().classes("bg-yellow-50 border-l-4 border-yellow-400 p-2 mb-2"):
+                        ui.label("📋 NEARBY-only fallback").classes("text-xs font-semibold text-yellow-800")
+                        ui.label(
+                            "This edge was resolved via same-file proximity (no dependency edge found). "
+                            "To populate CALLS, IMPORTS, EXTENDS edges, re-ingest with Python AST parser enabled."
+                        ).classes("text-xs text-yellow-700 leading-snug")
+                
                 with ui.grid(columns=2).classes("gap-x-3 gap-y-0.5 text-xs w-full"):
                     for key, val in meta.items():
                         if key in {"_content", "_detail_kind"}:

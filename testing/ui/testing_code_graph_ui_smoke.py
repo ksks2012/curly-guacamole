@@ -189,6 +189,7 @@ def test_code_graph_tab_uses_fixed_graph_and_detail_panel_sizes():
     import inspect
 
     source = inspect.getsource(build)
+    assert "width: 100%" in source
     assert "height: 40rem" in source
     assert "width: 26rem" in source
 
@@ -203,3 +204,14 @@ def test_code_graph_tab_splits_connected_components_into_multiple_graphs():
     assert "_split_connected_components" in source
     assert "Graphs:" in source
     assert "for (let i = 0; i < payloads.length; i += 1)" in source
+
+
+def test_code_graph_tab_shows_edge_type_summary_in_meta():
+    """Verify code graph tab surfaces edge type breakdown for diagnosis."""
+    from ui.code_graph_tab import build
+
+    import inspect
+
+    source = inspect.getsource(build)
+    assert "edge_type_counts" in source
+    assert "edge-types:" in source
