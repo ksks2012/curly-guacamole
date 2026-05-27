@@ -49,6 +49,9 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
     """Build the standalone code graph tab."""
 
     ALL_EDGE_TYPES = ("CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "NEARBY")
+    GRAPH_QUEUE_KEY = "__codeGraphTabQueue"
+    GRAPH_STATE_KEY = "__codeGraphTabState"
+    MAX_RENDER_COMPONENTS = 12
     graph_adapter = CodeGraphAdapter(limits=GraphLimits(max_nodes=80, max_edges=160))
     graph_lookup: dict[str, tuple[object, float, str]] = {}
     edge_lookup: dict[str, dict[str, Any]] = {}
@@ -382,6 +385,59 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 "text-xs font-semibold uppercase tracking-wide text-gray-500 mb-1"
             )
 
+            def _compute_diag_cache() -> dict[str, Any]:
+                """
+                Batch-query GraphStore once per repo instead of per-result.
+                Returns cache of {repo_id: {anchor_id: edge_count_tuple}}
+                """
+                cache: dict[str, dict[str, tuple[int, int, int]]] = {}
+                diag_rows = _active_primary_results()
+                if not diag_rows:
+                    return cache
+                
+                # Collect all unique repos from current results
+                repos_in_results = set()
+                for doc, _score, _key in diag_rows:
+                    meta_d = doc.metadata or {}
+                    repo_id = str(meta_d.get("repo_id", "")).strip()
+                    if repo_id:
+                        repos_in_results.add(repo_id)
+                
+                try:
+                    _store = GraphStore(AppConfig().graph_db_path)
+                except Exception:
+                    return cache
+                
+                # For each repo, fetch ALL edges once and cache counts by anchor
+                for repo_id in repos_in_results:
+                    try:
+                        all_edges = _store.get_edges(repo_id=repo_id)
+                        anchor_counts: dict[str, tuple[int, int, int]] = {}
+                        
+                        for edge in all_edges:
+                            src_id = str(edge.src_id or "").strip()
+                            dst_id = str(edge.dst_id or "").strip()
+                            
+                            for aid in [src_id, dst_id]:
+                                if not aid:
+                                    continue
+                                if aid not in anchor_counts:
+                                    anchor_counts[aid] = (0, 0, 0)  # (n_as_src, n_as_dst, total)
+                            
+                            if src_id in anchor_counts:
+                                n_src, n_dst, _ = anchor_counts[src_id]
+                                anchor_counts[src_id] = (n_src + 1, n_dst, n_src + 1 + n_dst)
+                            
+                            if dst_id in anchor_counts:
+                                n_src, n_dst, _ = anchor_counts[dst_id]
+                                anchor_counts[dst_id] = (n_src, n_dst + 1, n_src + n_dst + 1)
+                        
+                        cache[repo_id] = anchor_counts
+                    except Exception:
+                        cache[repo_id] = {}
+                
+                return cache
+
             @ui.refreshable
             def render_edge_debug() -> None:
                 selected_repo = str(graph_state.get("debug_repo_id") or repo_select.value or "").strip()
@@ -411,60 +467,58 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         ui.label("No search results yet.").classes("text-xs text-gray-400")
                     else:
                         diag_debug_repo = str(graph_state.get("debug_repo_id") or "").strip()
-                        try:
-                            _diag_store = GraphStore(AppConfig().graph_db_path)
-                        except Exception:
-                            _diag_store = None
+                        diag_cache = _compute_diag_cache()
+
+                        def _diag_anchor_ids() -> tuple[str, ...]:
+                            anchors: list[str] = []
+
+                            def _push(anchor_id: str) -> None:
+                                aid = str(anchor_id or "").strip()
+                                if aid and aid not in anchors:
+                                    anchors.append(aid)
+
+                            source_id = str(meta_d.get("chunk_id", "")).strip()
+                            repo_id = str(meta_d.get("repo_id", "")).strip()
+                            file_path = str(meta_d.get("file_path", "")).strip()
+                            source_name = str(meta_d.get("name", "")).strip()
+                            chunk_type = str(meta_d.get("chunk_type", "")).strip()
+
+                            _push(source_id)
+                            if repo_id and file_path and chunk_type != "module":
+                                _push(f"{repo_id}::{file_path}::module::<module>")
+                            if repo_id and file_path and chunk_type == "method":
+                                class_name = source_name.rsplit(".", 1)[0] if source_name else ""
+                                if class_name:
+                                    _push(f"{repo_id}::{file_path}::class::{class_name}")
+                            return tuple(anchors)
 
                         diag_lines: list[str] = []
                         for doc, _score, _key in diag_rows:
                             meta_d = doc.metadata or {}
                             cid = str(meta_d.get("chunk_id", "")).strip()
                             related = list(meta_d.get("related_blocks", []) or [])
-
-                            def _diag_anchor_ids() -> tuple[str, ...]:
-                                anchors: list[str] = []
-
-                                def _push(anchor_id: str) -> None:
-                                    aid = str(anchor_id or "").strip()
-                                    if aid and aid not in anchors:
-                                        anchors.append(aid)
-
-                                source_id = str(meta_d.get("chunk_id", "")).strip()
-                                repo_id = str(meta_d.get("repo_id", "")).strip()
-                                file_path = str(meta_d.get("file_path", "")).strip()
-                                source_name = str(meta_d.get("name", "")).strip()
-                                chunk_type = str(meta_d.get("chunk_type", "")).strip()
-
-                                _push(source_id)
-                                if repo_id and file_path and chunk_type != "module":
-                                    _push(f"{repo_id}::{file_path}::module::<module>")
-                                if repo_id and file_path and chunk_type == "method":
-                                    class_name = source_name.rsplit(".", 1)[0] if source_name else ""
-                                    if class_name:
-                                        _push(f"{repo_id}::{file_path}::class::{class_name}")
-                                return tuple(anchors)
-
                             anchor_ids = _diag_anchor_ids()
 
-                            # Raw GraphStore edge count across primary/module/class anchors.
+                            # Use cached edge counts instead of making DB queries
                             raw_gs = "?"
                             raw_gs_by_anchor = ""
-                            if _diag_store is not None and cid and diag_debug_repo:
+                            if diag_debug_repo and diag_debug_repo in diag_cache:
                                 try:
                                     anchor_counts: dict[str, int] = {"primary": 0, "module": 0, "class": 0}
                                     total_edges = 0
+                                    anchor_edge_map = diag_cache[diag_debug_repo]
+                                    
                                     for anchor_id in anchor_ids:
-                                        n_out = len(_diag_store.get_edges(src_id=anchor_id, repo_id=diag_debug_repo))
-                                        n_in = len(_diag_store.get_edges(dst_id=anchor_id, repo_id=diag_debug_repo))
-                                        n = n_out + n_in
-                                        total_edges += n
-                                        if anchor_id == cid:
-                                            anchor_counts["primary"] += n
-                                        elif "::module::<module>" in anchor_id:
-                                            anchor_counts["module"] += n
-                                        elif "::class::" in anchor_id:
-                                            anchor_counts["class"] += n
+                                        if anchor_id in anchor_edge_map:
+                                            n_src, n_dst, n_total = anchor_edge_map[anchor_id]
+                                            n = n_total
+                                            total_edges += n
+                                            if anchor_id == cid:
+                                                anchor_counts["primary"] += n
+                                            elif "::module::<module>" in anchor_id:
+                                                anchor_counts["module"] += n
+                                            elif "::class::" in anchor_id:
+                                                anchor_counts["class"] += n
                                     raw_gs = str(total_edges)
                                     raw_gs_by_anchor = (
                                         f"primary:{anchor_counts['primary']} "
@@ -497,29 +551,22 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             "w-full font-mono text-xs"
                         ).style("max-height:16rem; overflow-y:auto;")
 
-            @ui.refreshable
-            def render_graph() -> None:
-                nonlocal graph_lookup, edge_lookup
+            def _prepare_graph_payload() -> CodeGraphPayload | None:
+                """Prepare graph payload: build, filter edges, validate results."""
                 rows = _active_primary_results()
                 if not rows:
-                    ui.label("Graph appears after search results are available.").classes(
-                        "text-gray-400 italic text-sm"
-                    )
-                    return
-
+                    return None
+                
                 retrieval_rows = _to_retrieval_results(rows)
                 payload = graph_adapter.build(retrieval_rows, query=ctrl.last_query)
-
+                
                 selected_edge_types = _selected_edge_types()
-                if selected_edge_types:
-                    visible_edges = [
-                        edge for edge in payload.edges
-                        if str(edge.edge_type or "").strip() in selected_edge_types
-                    ]
-                else:
-                    visible_edges = []
-
-                payload = CodeGraphPayload(
+                visible_edges = [
+                    edge for edge in payload.edges
+                    if str(edge.edge_type or "").strip() in selected_edge_types
+                ] if selected_edge_types else []
+                
+                return CodeGraphPayload(
                     nodes=list(payload.nodes),
                     edges=visible_edges,
                     meta={
@@ -529,6 +576,9 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     },
                 )
 
+            def _update_graph_caches(payload: CodeGraphPayload) -> None:
+                """Update internal graph_lookup and edge_lookup caches for node/edge interactions."""
+                nonlocal graph_lookup, edge_lookup
                 all_lookup = _all_result_lookup()
                 graph_lookup = {
                     node.id: all_lookup[node.id]
@@ -549,54 +599,39 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                     for edge in payload.edges
                 }
 
-                graph_state["serial"] += 1
-                serial = graph_state["serial"]
-                graph_state["last_payload"] = payload
-                payload_json = payload.to_cytoscape()
-                payload_repo_ids = sorted(
-                    {
-                        str(node.metadata.get("repo_id", "")).strip()
-                        for node in payload.nodes
-                        if str(node.metadata.get("repo_id", "")).strip()
-                    }
-                )
-                selected_repo = str(repo_select.value or "").strip()
-                graph_state["debug_repo_id"] = selected_repo or (
-                    payload_repo_ids[0] if len(payload_repo_ids) == 1 else ""
-                )
-                components = (
-                    _split_connected_components(payload_json)
-                    if payload.edges
-                    else ([payload_json] if payload.nodes else [])
-                )
-                payload_components_json = json.dumps(components, ensure_ascii=True)
-
+            def _compute_graph_metadata(payload: CodeGraphPayload, component_count: int = 1) -> dict[str, str]:
+                """Compute graph metadata lines: node counts, edge types, truncation warnings, etc."""
                 meta = payload.meta or {}
                 node_count = len(payload.nodes)
                 edge_count = len(payload.edges)
+                
                 edge_type_counts: dict[str, int] = {}
                 for edge in payload.edges:
                     edge_type = str(edge.edge_type or "UNKNOWN")
                     edge_type_counts[edge_type] = edge_type_counts.get(edge_type, 0) + 1
+                
                 truncated_nodes = meta.get("truncated_nodes", False)
                 truncated_edges = meta.get("truncated_edges", False)
                 related_hit_rate = meta.get("related_count_hit_rate", 0.0)
                 relation_mode = "enriched" if bool(relation_toggle.value) else "vector-only"
                 stage = get_stage(str(graph_state["stage_mode"]))
                 current_stage_p95 = float(graph_state["latency_p95_ms"].get(stage.key, 0.0) or 0.0)
-
+                selected_edge_types = _selected_edge_types()
+                
                 meta_lines = [
                     f"Nodes: {node_count}",
                     f"Edges: {edge_count}",
-                    f"Graphs: {len(components)}",
+                    f"Graphs: {component_count}",
                     f"Layout: {graph_state['layout']}",
                     f"Relation: {relation_mode}",
                     f"Stage: {stage.label}",
                 ]
+                
                 if selected_edge_types:
                     meta_lines.append(f"edge filter: {', '.join(selected_edge_types)}")
                 else:
                     meta_lines.append("edge filter: none")
+                
                 if truncated_nodes:
                     meta_lines.append("⚠ nodes truncated")
                 if truncated_edges:
@@ -610,19 +645,71 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         f"{edge_type}:{count}" for edge_type, count in sorted(edge_type_counts.items())
                     )
                     meta_lines.append(f"edge-types: {edge_type_summary}")
+                
+                return {"edge_type_counts": edge_type_counts, "meta_lines": meta_lines}
 
+            @ui.refreshable
+            def render_graph() -> None:
+                # Step 1: Prepare graph payload (build, filter, validate)
+                payload = _prepare_graph_payload()
+                if payload is None:
+                    ui.label("Graph appears after search results are available.").classes(
+                        "text-gray-400 italic text-sm"
+                    )
+                    return
+
+                # Step 2: Update internal caches for node/edge click handlers
+                _update_graph_caches(payload)
+
+                # Step 3: Prepare graph state for rendering (payload building)
+                graph_state["serial"] += 1
+                serial = graph_state["serial"]
+                graph_state["last_payload"] = payload
+                payload_json = payload.to_cytoscape()
+                
+                payload_repo_ids = sorted(
+                    {
+                        str(node.metadata.get("repo_id", "")).strip()
+                        for node in payload.nodes
+                        if str(node.metadata.get("repo_id", "")).strip()
+                    }
+                )
+                selected_repo = str(repo_select.value or "").strip()
+                graph_state["debug_repo_id"] = selected_repo or (
+                    payload_repo_ids[0] if len(payload_repo_ids) == 1 else ""
+                )
+                
+                components = (
+                    _split_connected_components(payload_json)
+                    if payload.edges
+                    else ([payload_json] if payload.nodes else [])
+                )
+                rendered_components = components[:MAX_RENDER_COMPONENTS]
+                hidden_component_count = max(0, len(components) - len(rendered_components))
+                payload_components_json = json.dumps(rendered_components, ensure_ascii=True)
+
+                # Step 4: Compute metadata and statistics (now we have component count)
+                graph_meta_info = _compute_graph_metadata(payload, component_count=len(components))
+                meta_lines = graph_meta_info["meta_lines"]
+
+                # Step 5: Render UI components
+                selected_edge_types = _selected_edge_types()
                 if not selected_edge_types:
                     ui.label("No edge types selected. The graph is showing nodes only.").classes(
                         "text-xs text-amber-700 mb-2"
                     )
 
                 ui.label(" | ".join(meta_lines)).classes("text-xs text-gray-500 mb-2")
-                render_edge_debug()
+                if hidden_component_count > 0:
+                    ui.label(
+                        f"Showing top {len(rendered_components)} components; {hidden_component_count} smaller components are hidden for performance."
+                    ).classes("text-xs text-amber-700 mb-2")
+                render_edge_debug.refresh()
 
                 with ui.element("div").classes("w-full").style(
                     "flex:1 1 auto; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:0.75rem;"
                 ):
-                    for index, component in enumerate(components):
+                    for index, component in enumerate(rendered_components):
                         component_nodes = len(component.get("nodes") or [])
                         component_edges = len(component.get("edges") or [])
                         ui.label(f"Graph {index + 1}: {component_nodes} nodes / {component_edges} edges").classes(
@@ -634,6 +721,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             'style="width:100%;height:420px;min-height:420px;border:1px solid #e5e7eb;border-radius:8px;"></div>'
                         ).classes("w-full")
 
+                # Step 6: Initialize Cytoscape.js with deferred execution
                 init_graph_js = f"""
                 (function() {{
                     const payloads = {payload_components_json};
@@ -648,14 +736,14 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         return;
                     }}
 
-                    window.__codeGraphQueue = window.__codeGraphQueue || [];
-                    window.__codeGraphState = window.__codeGraphState || {{ cys: [] }};
-                    if (Array.isArray(window.__codeGraphState.cys)) {{
-                        for (const prevCy of window.__codeGraphState.cys) {{
+                    window[{json.dumps(GRAPH_QUEUE_KEY)}] = window[{json.dumps(GRAPH_QUEUE_KEY)}] || [];
+                    window[{json.dumps(GRAPH_STATE_KEY)}] = window[{json.dumps(GRAPH_STATE_KEY)}] || {{ cys: [] }};
+                    if (Array.isArray(window[{json.dumps(GRAPH_STATE_KEY)}].cys)) {{
+                        for (const prevCy of window[{json.dumps(GRAPH_STATE_KEY)}].cys) {{
                             try {{ prevCy.destroy(); }} catch (_e) {{}}
                         }}
                     }}
-                    window.__codeGraphState.cys = [];
+                    window[{json.dumps(GRAPH_STATE_KEY)}].cys = [];
 
                     const edgeClass = (t) => 'edge-' + String(t || '').toLowerCase();
 
@@ -716,9 +804,9 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             ],
                             layout: {{ name: {json.dumps(graph_state["layout"])}, directed: true, padding: 20, spacingFactor: 1.05 }},
                         }});
-                        window.__codeGraphState.cys.push(cy);
+                        window[{json.dumps(GRAPH_STATE_KEY)}].cys.push(cy);
                         cy.on('tap', 'node', (evt) => {{
-                            window.__codeGraphQueue.push({{
+                            window[{json.dumps(GRAPH_QUEUE_KEY)}].push({{
                                 serial,
                                 event: 'node_click',
                                 node_id: evt.target.id(),
@@ -727,7 +815,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             }});
                         }});
                         cy.on('tap', 'edge', (evt) => {{
-                            window.__codeGraphQueue.push({{
+                            window[{json.dumps(GRAPH_QUEUE_KEY)}].push({{
                                 serial,
                                 event: 'edge_click',
                                 node_id: '',
@@ -737,7 +825,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                         }});
                         cy.on('tap', (evt) => {{
                             if (evt.target !== cy) return;
-                            window.__codeGraphQueue.push({{
+                            window[{json.dumps(GRAPH_QUEUE_KEY)}].push({{
                                 serial,
                                 event: 'canvas_click',
                                 node_id: '',
@@ -798,7 +886,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
         event_start = time.perf_counter()
         try:
             raw_event = await ui.run_javascript(
-                "(function(){const q=window.__codeGraphQueue||[]; return q.length ? q.shift() : null;})()"
+                f"(function(){{const q=window[{json.dumps(GRAPH_QUEUE_KEY)}]||[]; return q.length ? q.shift() : null;}})()"
             )
         except Exception:
             return
