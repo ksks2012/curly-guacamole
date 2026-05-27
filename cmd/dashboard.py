@@ -42,6 +42,7 @@ from ui.index_controller import IndexController
 from ui.config_controller import ConfigController
 from ui.knowledge_controller import KnowledgeController
 import ui.search_tab as search_tab_ui
+import ui.code_graph_tab as code_graph_tab_ui
 import ui.index_tab as index_tab_ui
 import ui.trace_tab as trace_tab_ui
 import ui.config_tab as config_tab_ui
@@ -77,6 +78,9 @@ log.info("RAG client ready")
 @ui.page("/")
 def dashboard():
     ui.page_title("RAG Debug Dashboard")
+    ui.add_head_html(
+        '<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>'
+    )
 
     with ui.column().style(
         "width: 100%; height: 100vh; display: flex; flex-direction: column;"
@@ -87,6 +91,9 @@ def dashboard():
             "flex-shrink: 0;"
         ) as tabs:
             search_tab = ui.tab("Search").props("no-caps")
+            code_search_tab = ui.tab("Code Search").props("no-caps")
+            code_graph_tab = ui.tab("Code Graph").props("no-caps")
+            code_list_tab = ui.tab("Code List").props("no-caps")
             trace_tab  = ui.tab("Trace").props("no-caps")
             index_tab  = ui.tab("Index").props("no-caps")
             know_tab   = ui.tab("Knowledge").props("no-caps")
@@ -103,8 +110,37 @@ def dashboard():
             with ui.tab_panel(search_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
             ):
-                search_result = search_tab_ui.build(_ctrl, on_search=_on_search)
+                search_result = search_tab_ui.build(
+                    _ctrl,
+                    on_search=_on_search,
+                    result_scope="document",
+                    title="RAG Debug Dashboard",
+                )
                 fi_source = search_result.fi_source
+
+            with ui.tab_panel(code_search_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                search_tab_ui.build(
+                    _ctrl,
+                    on_search=_on_search,
+                    result_scope="code",
+                    title="Code Search",
+                    enable_graph=False,
+                )
+
+            with ui.tab_panel(code_graph_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                code_graph_tab_ui.build(_ctrl, title="Code Graph")
+
+            with ui.tab_panel(code_list_tab).classes("p-0").style(
+                "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
+            ):
+                search_tab_ui.build_code_list(
+                    _ctrl,
+                    title="Code List",
+                )
 
             with ui.tab_panel(trace_tab).classes("p-0").style(
                 "height: 100%; display: flex; flex-direction: column; overflow: hidden;"
@@ -118,7 +154,7 @@ def dashboard():
                 index_tab_ui.build(
                     _idx_ctrl, log,
                     on_doc_indexed=lambda: fi_source.set_options(
-                        {"": ""} | _ctrl.list_doc_title_map()
+                        search_result.source_options()
                     ),
                 )
 

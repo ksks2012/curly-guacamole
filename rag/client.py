@@ -22,10 +22,15 @@ from rag.memory.user_memory      import UserMemoryManager
 from rag.memory.timeline         import KnowledgeTimeline
 from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
+from rag.code.graph_store import GraphStore
+from rag.code.indexer import CodeIndexer
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import PipelineBuilder
+from rag.retrieval.base import RetrievalResult
+from rag.retrieval.code_query_scope import parse_code_query_scope, rerank_code_rows_by_scope
+from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
@@ -373,6 +378,280 @@ class LocalLlamaClient:
         limit: int = 500,
     ) -> list[dict]:
         return self.searcher.browse_chunks(doc_id=doc_id, tag=tag, topic=topic, limit=limit)
+
+    def browse_code_blocks(
+        self,
+        *,
+        repo_id: str | None = None,
+        file_path: str | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return code chunks from the ``code_block`` collection.
+
+        Each item has keys:
+            - ``content``  : full code text
+            - ``metadata`` : stored CodeChunk metadata
+        """
+        conditions: list[dict] = []
+        if repo_id:
+            conditions.append({"repo_id": {"$eq": repo_id}})
+        if file_path:
+            conditions.append({"file_path": {"$eq": file_path}})
+
+        kwargs: dict = {"include": ["documents", "metadatas"], "limit": limit}
+        if len(conditions) == 1:
+            kwargs["where"] = conditions[0]
+        elif len(conditions) > 1:
+            kwargs["where"] = {"$and": conditions}
+
+        for persist_dir in self._code_block_persist_dirs():
+            try:
+                block_db = Chroma(
+                    persist_directory=persist_dir,
+                    embedding_function=self.embed,
+                    collection_name="code_block",
+                )
+            except Exception as exc:
+                log.warning(
+                    "browse_code_blocks: cannot open code_block collection dir=%s error=%s",
+                    persist_dir,
+                    exc,
+                )
+                continue
+
+            try:
+                result = block_db.get(**kwargs)
+            except Exception as exc:
+                log.warning("browse_code_blocks: query failed dir=%s error=%s", persist_dir, exc)
+                continue
+
+            docs = result.get("documents") or []
+            metas = result.get("metadatas") or []
+
+            rows: list[dict] = []
+            for text, meta in zip(docs, metas):
+                if not text:
+                    continue
+                rows.append({"content": text, "metadata": meta or {}})
+
+            if rows:
+                return rows
+
+        return []
+
+    def list_code_repo_ids(self, *, limit: int = 5000) -> list[str]:
+        """Return distinct repo_id values found in ``code_block`` metadata."""
+        out: set[str] = set()
+        for persist_dir in self._code_block_persist_dirs():
+            try:
+                block_db = Chroma(
+                    persist_directory=persist_dir,
+                    embedding_function=self.embed,
+                    collection_name="code_block",
+                )
+            except Exception as exc:
+                log.warning(
+                    "list_code_repo_ids: cannot open code_block collection dir=%s error=%s",
+                    persist_dir,
+                    exc,
+                )
+                continue
+
+            try:
+                raw = block_db.get(include=["metadatas"], limit=max(1, int(limit)))
+            except Exception as exc:
+                log.warning("list_code_repo_ids: query failed dir=%s error=%s", persist_dir, exc)
+                continue
+
+            for meta in (raw.get("metadatas") or []):
+                repo_id = str((meta or {}).get("repo_id", "")).strip()
+                if repo_id:
+                    out.add(repo_id)
+
+        return sorted(out)
+
+    def search_code_blocks(
+        self,
+        query: str,
+        *,
+        k: int = 5,
+        fetch_k: int = 20,
+        use_rerank: bool = False,
+        include_relations: bool = False,
+    ) -> dict:
+        """Search directly in the ``code_block`` collection.
+
+        Returns a dashboard-compatible payload:
+            {"vector", "bm25", "hybrid", "reranked", "trace"}
+        """
+        query_scope = parse_code_query_scope(query)
+        semantic_query = query_scope.semantic_query or query
+        raw: list[tuple[Document, float]] = []
+        for persist_dir in self._code_block_persist_dirs():
+            try:
+                block_db = Chroma(
+                    persist_directory=persist_dir,
+                    embedding_function=self.embed,
+                    collection_name="code_block",
+                )
+            except Exception as exc:
+                log.warning(
+                    "search_code_blocks: cannot open code_block collection dir=%s error=%s",
+                    persist_dir,
+                    exc,
+                )
+                continue
+
+            try:
+                raw = block_db.similarity_search_with_score(semantic_query, k=fetch_k)
+            except Exception as exc:
+                log.warning("search_code_blocks: query failed dir=%s error=%s", persist_dir, exc)
+                continue
+
+            if raw:
+                break
+
+        if not raw:
+            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
+
+        vector = [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
+        vector = rerank_code_rows_by_scope(vector, query_scope)
+
+        if include_relations:
+            vector = self._enrich_code_results_with_relations(query=semantic_query, rows=vector)
+
+        reranked = None
+        if use_rerank and self.reranker is not None:
+            reranked = self.reranker.rerank_with_scores(
+                semantic_query,
+                [doc for doc, _ in vector],
+                top_k=k,
+            )
+
+        return {
+            "vector": vector,
+            "bm25": None,
+            "hybrid": None,
+            "reranked": reranked,
+            "trace": [],
+        }
+
+    def _code_block_persist_dirs(self) -> list[str]:
+        dirs = [
+            str(self.config.code_rag_root),
+            str(self.persist_directory),
+        ]
+        out: list[str] = []
+        seen: set[str] = set()
+        for d in dirs:
+            k = str(d).strip()
+            if not k or k in seen:
+                continue
+            seen.add(k)
+            out.append(k)
+        return out
+
+    def _enrich_code_results_with_relations(
+        self,
+        *,
+        query: str,
+        rows: list[tuple[Document, float]],
+    ) -> list[tuple[Document, float]]:
+        if not rows:
+            return rows
+
+        try:
+            graph = GraphStore(self.config.graph_db_path)
+        except Exception as exc:
+            log.warning("search_code_blocks: relation graph unavailable: %s", exc)
+            return rows
+
+        candidates = self._code_block_persist_dirs()
+        block_db = None
+        block_persist_dir = ""
+        for persist_dir in candidates:
+            try:
+                block_db = Chroma(
+                    persist_directory=persist_dir,
+                    embedding_function=self.embed,
+                    collection_name="code_block",
+                )
+                block_persist_dir = str(persist_dir)
+                break
+            except Exception:
+                continue
+        if block_db is None:
+            return rows
+
+        try:
+            block_indexer = CodeIndexer(block_persist_dir, self.embed)
+        except Exception:
+            block_indexer = None
+
+        class _StaticRetriever:
+            def __init__(
+                self,
+                base_rows: list[tuple[Document, float]],
+                *,
+                indexer: CodeIndexer | None = None,
+            ) -> None:
+                self._base_rows = [
+                    RetrievalResult(
+                        content=doc.page_content,
+                        score=float(score),
+                        source="code",
+                        metadata=dict(doc.metadata or {}),
+                    )
+                    for doc, score in base_rows
+                ]
+                # Expose an indexer so RelatedCodeRetriever can resolve import targets
+                # through its internal block-db fallback path.
+                self._indexer = indexer
+
+            def search(self, _query: str, top_k: int = 5, filters=None, repo_ids=None):
+                return self._base_rows[: max(0, int(top_k))]
+
+        def _fetch_block(repo_id: str, target_id: str) -> dict | None:
+            where = {
+                "$and": [
+                    {"repo_id": {"$eq": repo_id}},
+                    {"chunk_id": {"$eq": target_id}},
+                ]
+            }
+            raw = block_db.get(where=where, include=["metadatas"])
+            metas = raw.get("metadatas") or []
+            if not metas:
+                return None
+            return dict(metas[0] or {})
+
+        def _fetch_file_blocks(repo_id: str, file_path: str) -> list[dict]:
+            where = {
+                "$and": [
+                    {"repo_id": {"$eq": repo_id}},
+                    {"file_path": {"$eq": file_path}},
+                ]
+            }
+            raw = block_db.get(where=where, include=["metadatas"])
+            metas = raw.get("metadatas") or []
+            return [dict(m or {}) for m in metas]
+
+        retriever = RelatedCodeRetriever(
+            _StaticRetriever(rows, indexer=block_indexer),
+            graph,
+            block_fetcher=_fetch_block,
+            file_blocks_fetcher=_fetch_file_blocks,
+        )
+
+        try:
+            enriched = retriever.search(query, top_k=len(rows), filters=None)
+        except Exception as exc:
+            log.warning("search_code_blocks: relation enrichment failed: %s", exc)
+            return rows
+
+        out: list[tuple[Document, float]] = []
+        for r in enriched:
+            out.append((Document(page_content=r.content, metadata=dict(r.metadata or {})), float(r.score)))
+        return out
 
     def rebuild_bm25(self) -> None:
         self.searcher.rebuild_bm25()

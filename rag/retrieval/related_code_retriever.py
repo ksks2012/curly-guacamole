@@ -52,6 +52,19 @@ def _parse_symbol_like_id(identifier: str) -> tuple[str, str, str, str] | None:
     return repo_id, file_path, chunk_type, name
 
 
+def _extract_metadatas(raw: object) -> list[dict]:
+    if not isinstance(raw, dict):
+        return []
+    metas = raw.get("metadatas", [])
+    if not isinstance(metas, list):
+        return []
+    out: list[dict] = []
+    for item in metas:
+        if isinstance(item, dict):
+            out.append(dict(item))
+    return out
+
+
 class RelatedCodeRetriever:
     """Compose a base retriever and append related block metadata.
 
@@ -88,6 +101,7 @@ class RelatedCodeRetriever:
         self._edge_types = tuple(t for t in edge_types if t in _ALLOWED_EDGE_TYPES)
         self._block_fetcher = block_fetcher
         self._file_blocks_fetcher = file_blocks_fetcher
+        self._repo_blocks_cache: dict[str, list[dict]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -135,6 +149,8 @@ class RelatedCodeRetriever:
         repo_id = str(meta.get("repo_id", "")).strip()
         file_path = str(meta.get("file_path", "")).strip()
         start_line = int(meta.get("start_line", 0) or 0)
+        source_name = str(meta.get("name", "")).strip()
+        source_chunk_type = str(meta.get("chunk_type", "")).strip()
 
         candidates: list[dict] = []
 
@@ -143,6 +159,9 @@ class RelatedCodeRetriever:
                 self._collect_graph_relations(
                     source_id=source_id,
                     repo_id=repo_id,
+                    file_path=file_path,
+                    source_name=source_name,
+                    source_chunk_type=source_chunk_type,
                 )
             )
 
@@ -181,24 +200,57 @@ class RelatedCodeRetriever:
         *,
         source_id: str,
         repo_id: str,
+        file_path: str,
+        source_name: str,
+        source_chunk_type: str,
     ) -> list[dict]:
         rows: list[dict] = []
 
-        outgoing = self._graph.get_edges(src_id=source_id, repo_id=repo_id)
-        incoming = self._graph.get_edges(dst_id=source_id, repo_id=repo_id)
+        anchor_ids = self._source_anchor_ids(
+            source_id=source_id,
+            repo_id=repo_id,
+            file_path=file_path,
+            source_name=source_name,
+            source_chunk_type=source_chunk_type,
+        )
+
+        seen_edges: set[tuple[str, str, str, int, str]] = set()
 
         candidates: list[tuple[str, object]] = []
-        candidates.extend(("outgoing", e) for e in outgoing)
-        candidates.extend(("incoming", e) for e in incoming)
+        for anchor_id in anchor_ids:
+            outgoing = self._get_edges_safe(src_id=anchor_id, repo_id=repo_id)
+            incoming = self._get_edges_safe(dst_id=anchor_id, repo_id=repo_id)
+            for edge in outgoing:
+                edge_key = (
+                    str(getattr(edge, "src_id", "")),
+                    str(getattr(edge, "dst_id", "")),
+                    str(getattr(edge, "edge_type", "")),
+                    int(getattr(edge, "line_no", 0) or 0),
+                    "outgoing",
+                )
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                candidates.append(("outgoing", edge))
+            for edge in incoming:
+                edge_key = (
+                    str(getattr(edge, "src_id", "")),
+                    str(getattr(edge, "dst_id", "")),
+                    str(getattr(edge, "edge_type", "")),
+                    int(getattr(edge, "line_no", 0) or 0),
+                    "incoming",
+                )
+                if edge_key in seen_edges:
+                    continue
+                seen_edges.add(edge_key)
+                candidates.append(("incoming", edge))
 
         for direction, edge in candidates:
             if getattr(edge, "edge_type", "") not in self._edge_types:
                 continue
 
             target_id = edge.dst_id if direction == "outgoing" else edge.src_id
-            if not target_id or target_id == source_id:
-                continue
-            if str(target_id).startswith("import::"):
+            if not target_id or target_id in anchor_ids:
                 continue
 
             line_no = int(getattr(edge, "line_no", 0) or 0)
@@ -210,11 +262,13 @@ class RelatedCodeRetriever:
             if target_meta is None:
                 continue
 
+            resolved_target_id = str(target_meta.get("chunk_id", "")).strip() or str(target_id)
+
             mapping_strategy = target_meta.pop("_mapping_strategy", "exact_chunk_id")
 
             rows.append(
                 {
-                    "target_id": target_id,
+                    "target_id": resolved_target_id,
                     "edge_type": edge.edge_type,
                     "direction": direction,
                     "reason": f"{edge.edge_type} relation from dependency graph",
@@ -224,12 +278,60 @@ class RelatedCodeRetriever:
                     "line_no": line_no,
                     "hop": 1,
                     "mapping_strategy": mapping_strategy,
+                    "source_anchor": self._edge_source_anchor(
+                        edge=edge,
+                        direction=direction,
+                        anchor_ids=anchor_ids,
+                    ),
                     "target_file_path": target_meta.get("file_path", ""),
                     "target_name": target_meta.get("name", ""),
                     "target_chunk_type": target_meta.get("chunk_type", ""),
                 }
             )
         return rows[: self._max_related] if self._max_related > 0 else []
+
+    @staticmethod
+    def _source_anchor_ids(
+        *,
+        source_id: str,
+        repo_id: str,
+        file_path: str,
+        source_name: str,
+        source_chunk_type: str,
+    ) -> tuple[str, ...]:
+        anchors: list[str] = []
+
+        def _push(anchor_id: str) -> None:
+            aid = str(anchor_id or "").strip()
+            if aid and aid not in anchors:
+                anchors.append(aid)
+
+        _push(source_id)
+
+        normalized_type = str(source_chunk_type or "").strip()
+        if repo_id and file_path and normalized_type != "module":
+            _push(f"{repo_id}::{file_path}::module::<module>")
+
+        if repo_id and file_path and normalized_type == "method":
+            class_name = str(source_name or "").strip().rsplit(".", 1)[0]
+            if class_name:
+                _push(f"{repo_id}::{file_path}::class::{class_name}")
+
+        return tuple(anchors)
+
+    def _get_edges_safe(self, **kwargs) -> list[object]:
+        try:
+            return list(self._graph.get_edges(**kwargs) or [])
+        except Exception:
+            return []
+
+    @staticmethod
+    def _edge_source_anchor(*, edge: object, direction: str, anchor_ids: tuple[str, ...]) -> str:
+        if direction == "outgoing":
+            source = str(getattr(edge, "src_id", "")).strip()
+        else:
+            source = str(getattr(edge, "dst_id", "")).strip()
+        return source if source in anchor_ids else ""
 
     def _collect_nearby_relations(
         self,
@@ -439,28 +541,37 @@ class RelatedCodeRetriever:
     ) -> dict | None:
         if self._block_fetcher is not None:
             meta = self._block_fetcher(repo_id, target_id)
-            if meta is None:
-                return None
-            m = dict(meta)
-            m.setdefault("_mapping_strategy", "custom_fetcher")
-            return m
+            if meta is not None:
+                m = dict(meta)
+                m.setdefault("_mapping_strategy", "custom_fetcher")
+                return m
+            # Exact lookup returned nothing — fall through to symbol-key fallback below.
 
         db = self._resolve_block_db()
-        if db is None:
-            return None
+        if db is not None:
+            where = {
+                "$and": [
+                    {"repo_id": {"$eq": repo_id}},
+                    {"chunk_id": {"$eq": target_id}},
+                ]
+            }
+            raw = db.get(where=where, include=["metadatas"])
+            metas = _extract_metadatas(raw)
+            if metas:
+                m = dict(metas[0])
+                m["_mapping_strategy"] = "exact_chunk_id"
+                return m
 
-        where = {
-            "$and": [
-                {"repo_id": {"$eq": repo_id}},
-                {"chunk_id": {"$eq": target_id}},
-            ]
-        }
-        raw = db.get(where=where, include=["metadatas"])
-        metas = raw.get("metadatas", []) or []
-        if metas:
-            m = dict(metas[0])
-            m["_mapping_strategy"] = "exact_chunk_id"
-            return m
+        import_target = self._parse_import_target(target_id)
+        if import_target is not None:
+            resolved = self._resolve_import_target_metadata(
+                repo_id=repo_id,
+                import_target=import_target,
+                preferred_line=preferred_line,
+            )
+            if resolved is not None:
+                return resolved
+            return None
 
         parsed = _parse_symbol_like_id(target_id)
         if parsed is None:
@@ -500,6 +611,158 @@ class RelatedCodeRetriever:
         chosen = dict(chosen)
         chosen["_mapping_strategy"] = "symbol_key_fallback"
         return chosen
+
+    @staticmethod
+    def _parse_import_target(target_id: str) -> str | None:
+        if not str(target_id).startswith("import::"):
+            return None
+        target = str(target_id).split("::", 1)[1].strip()
+        return target or None
+
+    @staticmethod
+    def _module_path_from_file_path(file_path: str) -> str:
+        path = str(file_path or "").strip()
+        if not path.endswith(".py"):
+            return ""
+        mod = path[:-3].replace("/", ".")
+        if mod.endswith(".__init__"):
+            mod = mod[: -len(".__init__")]
+        return mod.strip(".")
+
+    @staticmethod
+    def _leaf_name(symbol_name: str) -> str:
+        name = str(symbol_name or "").strip()
+        if not name:
+            return ""
+        return name.rsplit(".", 1)[-1]
+
+    def _fetch_repo_blocks(self, *, repo_id: str) -> list[dict]:
+        if repo_id in self._repo_blocks_cache:
+            return self._repo_blocks_cache[repo_id]
+
+        db = self._resolve_block_db()
+        if db is None:
+            self._repo_blocks_cache[repo_id] = []
+            return []
+
+        raw = db.get(where={"repo_id": {"$eq": repo_id}}, include=["metadatas"])
+        rows = _extract_metadatas(raw)
+        self._repo_blocks_cache[repo_id] = rows
+        return rows
+
+    def _resolve_import_target_metadata(
+        self,
+        *,
+        repo_id: str,
+        import_target: str,
+        preferred_line: int,
+    ) -> dict | None:
+        parts = [p for p in str(import_target).split(".") if p]
+        if not parts:
+            return None
+
+        repo_blocks = self._fetch_repo_blocks(repo_id=repo_id)
+        if not repo_blocks:
+            return None
+
+        module_to_file: dict[str, str] = {}
+        blocks_by_file: dict[str, list[dict]] = {}
+        for b in repo_blocks:
+            file_path = str(b.get("file_path", "")).strip()
+            if not file_path:
+                continue
+            blocks_by_file.setdefault(file_path, []).append(b)
+            mod = self._module_path_from_file_path(file_path)
+            if mod and mod not in module_to_file:
+                module_to_file[mod] = file_path
+
+        candidates: list[dict] = []
+
+        for i in range(len(parts), 0, -1):
+            module_path = ".".join(parts[:i])
+            file_path = module_to_file.get(module_path)
+            if not file_path:
+                continue
+
+            file_blocks = blocks_by_file.get(file_path, [])
+            suffix = parts[i:]
+            if not suffix:
+                candidates = [
+                    b for b in file_blocks
+                    if str(b.get("chunk_type", "")).strip() == "module"
+                ] or list(file_blocks)
+                break
+
+            symbol_suffix = ".".join(suffix)
+            candidates = [
+                b for b in file_blocks
+                if str(b.get("name", "")).strip() == symbol_suffix
+            ]
+            if candidates:
+                break
+
+            candidates = [
+                b for b in file_blocks
+                if str(b.get("name", "")).strip().endswith("." + symbol_suffix)
+            ]
+            if candidates:
+                break
+
+            leaf = suffix[-1]
+            candidates = [
+                b for b in file_blocks
+                if self._leaf_name(str(b.get("name", "")).strip()) == leaf
+            ]
+            if candidates:
+                break
+
+        if not candidates:
+            leaf = parts[-1]
+            candidates = [
+                b for b in repo_blocks
+                if self._leaf_name(str(b.get("name", "")).strip()) == leaf
+            ]
+
+        if not candidates:
+            return None
+
+        chosen = self._choose_import_candidate(candidates=candidates, preferred_line=preferred_line)
+        if chosen is None:
+            return None
+
+        out = dict(chosen)
+        out["_mapping_strategy"] = "import_path_fallback"
+        return out
+
+    def _choose_import_candidate(self, *, candidates: list[dict], preferred_line: int) -> dict | None:
+        if not candidates:
+            return None
+
+        def _span_size(meta: dict) -> int:
+            s = int(meta.get("start_line", 0) or 0)
+            e = int(meta.get("end_line", 0) or 0)
+            if s > 0 and e >= s:
+                return e - s + 1
+            return 10**9
+
+        def _line_distance(meta: dict) -> int:
+            if preferred_line <= 0:
+                return 0
+            s = int(meta.get("start_line", 0) or 0)
+            if s <= 0:
+                return 10**9
+            return abs(s - preferred_line)
+
+        ranked = sorted(
+            candidates,
+            key=lambda m: (
+                _line_distance(m),
+                _span_size(m),
+                int(m.get("start_line", 0) or 0),
+                str(m.get("chunk_type", "")),
+            ),
+        )
+        return ranked[0]
 
     def _choose_block_candidate(
         self,
@@ -559,8 +822,7 @@ class RelatedCodeRetriever:
             ]
         }
         raw = db.get(where=where, include=["metadatas"])
-        metas = raw.get("metadatas", []) or []
-        return [dict(m) for m in metas]
+        return _extract_metadatas(raw)
 
     def _resolve_block_db(self):
         # Supports HierarchicalCodeRetriever -> CodeRetriever -> CodeIndexer

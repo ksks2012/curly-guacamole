@@ -115,6 +115,19 @@ class AppConfig:
         return self._data.get("persist_directory", "./my_db")
 
     @property
+    def code_rag_root(self) -> str:
+        """Root directory for code RAG artifacts."""
+        return self._abspath(self._data.get("code_rag_root", "./my_db/code_rag"))
+
+    @property
+    def graph_db_path(self) -> str:
+        """Path to the SQLite database that stores code dependency edges."""
+        raw = self._data.get("graph_db_path")
+        if raw:
+            return self._abspath(raw)
+        return os.path.join(self.code_rag_root, "graph.db")
+
+    @property
     def db_url(self) -> str:
         """SQLAlchemy-compatible URL for the record manager database.
 

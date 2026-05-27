@@ -125,6 +125,33 @@ class SearchController:
     # Actions (state mutations)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_code_doc(doc: Document) -> bool:
+        """Return True when a retrieval document belongs to code index data."""
+        meta = dict(doc.metadata or {})
+        if str(meta.get("source_type", "")).strip().lower() == "code":
+            return True
+        if str(meta.get("repo_id", "")).strip():
+            return True
+        if str(meta.get("chunk_type", "")).strip():
+            return True
+        return False
+
+    def _filter_scope(
+        self,
+        rows: list[tuple[Document, float]] | None,
+        *,
+        scope: str,
+    ) -> list[tuple[Document, float]] | None:
+        """Filter retrieval rows by scope: all | document | code."""
+        if rows is None or scope == "all":
+            return rows
+        if scope == "code":
+            return [(d, s) for d, s in rows if self._is_code_doc(d)]
+        if scope == "document":
+            return [(d, s) for d, s in rows if not self._is_code_doc(d)]
+        return rows
+
     def run_search(
         self,
         query: str,
@@ -132,6 +159,9 @@ class SearchController:
         fetch_k: int,
         use_rerank: bool,
         use_hybrid: bool = False,
+        result_scope: str = "all",
+        apply_filter: bool = True,
+        include_relations: bool = False,
     ) -> str | None:
         """Execute a debug search and update internal state.
 
@@ -147,8 +177,8 @@ class SearchController:
 
         log.info(
             "run_search: query=%r  k=%d  fetch_k=%d  use_rerank=%s"
-            "  use_hybrid=%s  filter=%s",
-            query, k, fetch_k, use_rerank, use_hybrid, self._filter.summary(),
+            "  use_hybrid=%s  scope=%s  apply_filter=%s  filter=%s",
+            query, k, fetch_k, use_rerank, use_hybrid, result_scope, apply_filter, self._filter.summary(),
         )
         self._vector = []
         self._reranked = None
@@ -159,19 +189,28 @@ class SearchController:
         self._last_query = query
 
         try:
-            result = self._client.search_for_trace(
-                query, k=k, fetch_k=fetch_k,
-                use_rerank=use_rerank, use_hybrid=use_hybrid,
-                search_filter=self._filter if self.filter_active else None,
-            )
+            if result_scope == "code":
+                result = self._client.search_code_blocks(
+                    query,
+                    k=k,
+                    fetch_k=fetch_k,
+                    use_rerank=use_rerank,
+                    include_relations=include_relations,
+                )
+            else:
+                result = self._client.search_for_trace(
+                    query, k=k, fetch_k=fetch_k,
+                    use_rerank=use_rerank, use_hybrid=use_hybrid,
+                    search_filter=(self._filter if apply_filter and self.filter_active else None),
+                )
         except Exception as e:
             log.error("Search failed: %s", e, exc_info=True)
             return str(e)
 
-        self._vector   = result["vector"]
-        self._reranked = result["reranked"]
-        self._bm25     = result["bm25"]
-        self._hybrid   = result["hybrid"]
+        self._vector   = self._filter_scope(result["vector"], scope=result_scope) or []
+        self._reranked = self._filter_scope(result["reranked"], scope=result_scope)
+        self._bm25     = self._filter_scope(result["bm25"], scope=result_scope)
+        self._hybrid   = self._filter_scope(result["hybrid"], scope=result_scope)
         self._trace    = [
             TraceStep(
                 stage=s["stage"],
@@ -209,6 +248,109 @@ class SearchController:
             "select_chunk: chunk_id=%s  %s=%s",
             doc.metadata.get("chunk_id"), score_key, score,
         )
+
+    def select_chunk_by_id(self, chunk_id: str) -> bool:
+        """Select a chunk by id from current in-memory search results.
+
+        Search order prefers user-facing lists: reranked -> hybrid -> vector -> bm25.
+        Returns True when a matching chunk is found.
+        """
+        chunk_id = str(chunk_id or "").strip()
+        if not chunk_id:
+            return False
+
+        pools: list[tuple[str, list[tuple[Document, float]] | None]] = [
+            ("rscore", self._reranked),
+            ("rrf_score", self._hybrid),
+            ("vscore", self._vector),
+            ("bm25score", self._bm25),
+        ]
+        for score_key, docs in pools:
+            for doc, score in (docs or []):
+                if str(doc.metadata.get("chunk_id", "")).strip() == chunk_id:
+                    self.select_chunk(doc, score, score_key)
+                    return True
+        return False
+
+    def select_graph_node(self, node_data: dict) -> None:
+        """Select node metadata when graph node has no in-memory content."""
+        self._metadata = {
+            "_detail_kind": "node",
+            "graph_node_id": str(node_data.get("id", "")),
+            "label": str(node_data.get("label", "")),
+            "file_path": str(node_data.get("file_path", "")),
+            "chunk_type": str(node_data.get("chunk_type", "")),
+            "score": float(node_data.get("score", 0.0) or 0.0),
+            "is_primary": bool(node_data.get("is_primary", False)),
+            "_content_len": 0,
+            "_content": "Content unavailable in current result set.",
+            **dict(node_data.get("metadata", {}) or {}),
+        }
+
+    def select_graph_edge(self, edge_data: dict) -> None:
+        """Select edge metadata for graph relation inspection."""
+        meta = dict(edge_data.get("metadata", {}) or {})
+        explain = str(edge_data.get("explain", "") or "")
+        edge_types = meta.get("edge_types", [])
+        if not isinstance(edge_types, list):
+            edge_types = []
+
+        self._metadata = {
+            "_detail_kind": "edge",
+            "graph_edge_id": str(edge_data.get("id", "")),
+            "source_id": str(edge_data.get("source", "")),
+            "target_id": str(edge_data.get("target", "")),
+            "edge_type": str(edge_data.get("edge_type", "")),
+            "direction": str(edge_data.get("direction", "")),
+            "score": float(edge_data.get("score", 0.0) or 0.0),
+            "explain": explain,
+            "evidence_count": int(meta.get("evidence_count", 0) or 0),
+            "edge_types": edge_types,
+            "_content_len": len(explain),
+            "_content": explain or "No explanation available for this edge.",
+        }
+
+    def clear_selection(self) -> None:
+        """Clear selected detail metadata."""
+        self._metadata = {}
+
+    def handle_graph_node_click(self, node_id: str, node_data: dict) -> None:
+        """Handle node click by preferring in-memory chunk data and falling back to node payload."""
+        node_id = str(node_id or "").strip()
+        if node_id and self.select_chunk_by_id(node_id):
+            return
+        self.select_graph_node(node_data)
+
+    def handle_graph_edge_click(self, edge_data: dict) -> None:
+        """Handle edge click to show edge relation details."""
+        self.select_graph_edge(edge_data)
+
+    def handle_graph_canvas_click(self) -> None:
+        """Handle canvas click by resetting detail panel state."""
+        self.clear_selection()
+
+    def select_code_block(self, row: dict) -> None:
+        """Select a code block row for the shared detail panel."""
+        meta = dict((row or {}).get("metadata") or {})
+        content = str((row or {}).get("content") or "")
+        ordered_meta = {
+            "source_type": str(meta.get("source_type") or "code"),
+            "repo_id": str(meta.get("repo_id", "")),
+            "file_path": str(meta.get("file_path", "")),
+            "chunk_type": str(meta.get("chunk_type", "")),
+            "name": str(meta.get("name", "")),
+            "language": str(meta.get("language", "")),
+            "branch": str(meta.get("branch", "")),
+            "start_line": meta.get("start_line", ""),
+            "end_line": meta.get("end_line", ""),
+            "chunk_id": str(meta.get("chunk_id", "")),
+        }
+        for key in sorted(meta.keys()):
+            if key not in ordered_meta:
+                ordered_meta[key] = meta[key]
+        ordered_meta["_content_len"] = len(content)
+        ordered_meta["_content"] = content[:4000]
+        self._metadata = ordered_meta
 
     def set_filter(self, f: SearchFilter) -> None:
         """Replace the active filter entirely."""
@@ -264,6 +406,51 @@ class SearchController:
             return self._client.list_tags()
         except Exception as e:
             log.error("list_tags failed: %s", e)
+            return []
+
+    def list_code_blocks(
+        self,
+        *,
+        repo_id: str = "",
+        file_path: str = "",
+        text: str = "",
+        limit: int = 500,
+    ) -> list[dict]:
+        """Return code block rows with optional metadata/text filtering."""
+        try:
+            rows = self._client.browse_code_blocks(
+                repo_id=(repo_id or "").strip() or None,
+                file_path=(file_path or "").strip() or None,
+                limit=limit,
+            )
+        except Exception as e:
+            log.error("list_code_blocks failed: %s", e)
+            return []
+
+        needle = (text or "").strip().lower()
+        if not needle:
+            return rows
+
+        out: list[dict] = []
+        for row in rows:
+            meta = row.get("metadata") or {}
+            content = str(row.get("content") or "")
+            if (
+                needle in content.lower()
+                or needle in str(meta.get("name", "")).lower()
+                or needle in str(meta.get("file_path", "")).lower()
+                or needle in str(meta.get("chunk_type", "")).lower()
+                or needle in str(meta.get("repo_id", "")).lower()
+            ):
+                out.append(row)
+        return out
+
+    def list_code_repo_ids(self) -> list[str]:
+        """Return all known code repo ids for UI selection controls."""
+        try:
+            return self._client.list_code_repo_ids()
+        except Exception as e:
+            log.error("list_code_repo_ids failed: %s", e)
             return []
 
     # ------------------------------------------------------------------
