@@ -403,7 +403,8 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 with ui.expansion("Relation enrichment diagnostics", value=False).classes("w-full mb-2"):
                     ui.label(
                         "Per-result related_blocks from last search enrichment. "
-                        "raw_gs= direct GraphStore edge count for this chunk_id (0 = ID format mismatch)."
+                        "raw_gs= direct GraphStore edge count for this chunk_id (0 = ID format mismatch). "
+                        "source_anchor shows whether primary / module / class matched."
                     ).classes("text-xs text-gray-500 mb-2")
                     diag_rows = _active_primary_results()
                     if not diag_rows:
@@ -435,18 +436,18 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                                 diag_lines.append(f"{cid}\traw_gs={raw_gs}\t[no related_blocks]")
                                 continue
 
-                            type_counts: dict[str, int] = {}
-                            strat_counts: dict[str, int] = {}
                             for rb in related:
-                                et = str(rb.get("edge_type", "?"))
-                                st = str(rb.get("mapping_strategy", "?"))
-                                type_counts[et] = type_counts.get(et, 0) + 1
-                                strat_counts[st] = strat_counts.get(st, 0) + 1
-                            tc = " ".join(f"{t}:{n}" for t, n in sorted(type_counts.items()))
-                            sc = " ".join(f"{s}:{n}" for s, n in sorted(strat_counts.items()))
-                            diag_lines.append(
-                                f"{cid}\traw_gs={raw_gs}\tedge_types=[{tc}]\tstrategies=[{sc}]"
-                            )
+                                target_id = str(rb.get("target_id", "")).strip() or "?"
+                                et = str(rb.get("edge_type", "?")).strip() or "?"
+                                st = str(rb.get("mapping_strategy", "?")).strip() or "?"
+                                anchor = str(rb.get("source_anchor", "")).strip()
+                                if not anchor:
+                                    anchor = "nearby" if et == "NEARBY" else "unknown"
+                                direction = str(rb.get("direction", "")).strip() or "?"
+                                diag_lines.append(
+                                    f"{cid}\traw_gs={raw_gs}\ttarget_id={target_id}\tedge_type={et}"
+                                    f"\tmapping_strategy={st}\tsource_anchor={anchor}\tdirection={direction}"
+                                )
                         ui.textarea(value="\n".join(diag_lines)).props("readonly autogrow").classes(
                             "w-full font-mono text-xs"
                         ).style("max-height:16rem; overflow-y:auto;")

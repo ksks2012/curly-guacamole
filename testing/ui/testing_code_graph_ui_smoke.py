@@ -299,6 +299,7 @@ def test_code_graph_tab_exposes_relation_enrichment_diagnostics():
     assert "related_blocks" in source
     assert "edge_type" in source
     assert "mapping_strategy" in source
+    assert "source_anchor" in source
 
 
 def test_fetch_block_metadata_fallthrough_bug_is_fixed():
