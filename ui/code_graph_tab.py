@@ -403,7 +403,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                 with ui.expansion("Relation enrichment diagnostics", value=False).classes("w-full mb-2"):
                     ui.label(
                         "Per-result related_blocks from last search enrichment. "
-                        "raw_gs= direct GraphStore edge count for this chunk_id (0 = ID format mismatch). "
+                        "raw_gs= GraphStore edge count across source anchors (primary/module/class). "
                         "source_anchor shows whether primary / module / class matched."
                     ).classes("text-xs text-gray-500 mb-2")
                     diag_rows = _active_primary_results()
@@ -422,18 +422,62 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                             cid = str(meta_d.get("chunk_id", "")).strip()
                             related = list(meta_d.get("related_blocks", []) or [])
 
-                            # Raw GraphStore edge count: check ID format match
+                            def _diag_anchor_ids() -> tuple[str, ...]:
+                                anchors: list[str] = []
+
+                                def _push(anchor_id: str) -> None:
+                                    aid = str(anchor_id or "").strip()
+                                    if aid and aid not in anchors:
+                                        anchors.append(aid)
+
+                                source_id = str(meta_d.get("chunk_id", "")).strip()
+                                repo_id = str(meta_d.get("repo_id", "")).strip()
+                                file_path = str(meta_d.get("file_path", "")).strip()
+                                source_name = str(meta_d.get("name", "")).strip()
+                                chunk_type = str(meta_d.get("chunk_type", "")).strip()
+
+                                _push(source_id)
+                                if repo_id and file_path and chunk_type != "module":
+                                    _push(f"{repo_id}::{file_path}::module::<module>")
+                                if repo_id and file_path and chunk_type == "method":
+                                    class_name = source_name.rsplit(".", 1)[0] if source_name else ""
+                                    if class_name:
+                                        _push(f"{repo_id}::{file_path}::class::{class_name}")
+                                return tuple(anchors)
+
+                            anchor_ids = _diag_anchor_ids()
+
+                            # Raw GraphStore edge count across primary/module/class anchors.
                             raw_gs = "?"
+                            raw_gs_by_anchor = ""
                             if _diag_store is not None and cid and diag_debug_repo:
                                 try:
-                                    n_out = len(_diag_store.get_edges(src_id=cid, repo_id=diag_debug_repo))
-                                    n_in = len(_diag_store.get_edges(dst_id=cid, repo_id=diag_debug_repo))
-                                    raw_gs = str(n_out + n_in)
+                                    anchor_counts: dict[str, int] = {"primary": 0, "module": 0, "class": 0}
+                                    total_edges = 0
+                                    for anchor_id in anchor_ids:
+                                        n_out = len(_diag_store.get_edges(src_id=anchor_id, repo_id=diag_debug_repo))
+                                        n_in = len(_diag_store.get_edges(dst_id=anchor_id, repo_id=diag_debug_repo))
+                                        n = n_out + n_in
+                                        total_edges += n
+                                        if anchor_id == cid:
+                                            anchor_counts["primary"] += n
+                                        elif "::module::<module>" in anchor_id:
+                                            anchor_counts["module"] += n
+                                        elif "::class::" in anchor_id:
+                                            anchor_counts["class"] += n
+                                    raw_gs = str(total_edges)
+                                    raw_gs_by_anchor = (
+                                        f"primary:{anchor_counts['primary']} "
+                                        f"module:{anchor_counts['module']} "
+                                        f"class:{anchor_counts['class']}"
+                                    )
                                 except Exception:
                                     raw_gs = "err"
 
                             if not related:
-                                diag_lines.append(f"{cid}\traw_gs={raw_gs}\t[no related_blocks]")
+                                diag_lines.append(
+                                    f"{cid}\traw_gs={raw_gs}\traw_gs_anchor=[{raw_gs_by_anchor}]\t[no related_blocks]"
+                                )
                                 continue
 
                             for rb in related:
@@ -447,6 +491,7 @@ def build(ctrl: SearchController, *, title: str = "Code Graph") -> None:
                                 diag_lines.append(
                                     f"{cid}\traw_gs={raw_gs}\ttarget_id={target_id}\tedge_type={et}"
                                     f"\tmapping_strategy={st}\tsource_anchor={anchor}\tdirection={direction}"
+                                    f"\traw_gs_anchor=[{raw_gs_by_anchor}]"
                                 )
                         ui.textarea(value="\n".join(diag_lines)).props("readonly autogrow").classes(
                             "w-full font-mono text-xs"

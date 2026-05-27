@@ -23,6 +23,7 @@ from rag.memory.timeline         import KnowledgeTimeline
 from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
 from rag.code.graph_store import GraphStore
+from rag.code.indexer import CodeIndexer
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
@@ -567,6 +568,7 @@ class LocalLlamaClient:
 
         candidates = self._code_block_persist_dirs()
         block_db = None
+        block_persist_dir = ""
         for persist_dir in candidates:
             try:
                 block_db = Chroma(
@@ -574,14 +576,25 @@ class LocalLlamaClient:
                     embedding_function=self.embed,
                     collection_name="code_block",
                 )
+                block_persist_dir = str(persist_dir)
                 break
             except Exception:
                 continue
         if block_db is None:
             return rows
 
+        try:
+            block_indexer = CodeIndexer(block_persist_dir, self.embed)
+        except Exception:
+            block_indexer = None
+
         class _StaticRetriever:
-            def __init__(self, base_rows: list[tuple[Document, float]]) -> None:
+            def __init__(
+                self,
+                base_rows: list[tuple[Document, float]],
+                *,
+                indexer: CodeIndexer | None = None,
+            ) -> None:
                 self._base_rows = [
                     RetrievalResult(
                         content=doc.page_content,
@@ -591,6 +604,9 @@ class LocalLlamaClient:
                     )
                     for doc, score in base_rows
                 ]
+                # Expose an indexer so RelatedCodeRetriever can resolve import targets
+                # through its internal block-db fallback path.
+                self._indexer = indexer
 
             def search(self, _query: str, top_k: int = 5, filters=None, repo_ids=None):
                 return self._base_rows[: max(0, int(top_k))]
@@ -620,7 +636,7 @@ class LocalLlamaClient:
             return [dict(m or {}) for m in metas]
 
         retriever = RelatedCodeRetriever(
-            _StaticRetriever(rows),
+            _StaticRetriever(rows, indexer=block_indexer),
             graph,
             block_fetcher=_fetch_block,
             file_blocks_fetcher=_fetch_file_blocks,
