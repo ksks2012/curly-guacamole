@@ -1,4 +1,5 @@
 import os
+import re
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -34,6 +35,16 @@ from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
+
+
+_TEST_CODE_PATH_PATTERN = re.compile(
+    r"(^|/)(tests?|testing|spec|__tests__)(/|$)"
+    r"|(^|/)test_[^/]+$"
+    r"|(^|/)[^/]+_test\.py$"
+    r"|(^|/)testing_[^/]+\.py$"
+    r"|\.test\.(js|ts|jsx|tsx)$"
+    r"|\.spec\.(js|ts|jsx|tsx)$"
+)
 
 
 class LocalLlamaClient:
@@ -514,6 +525,15 @@ class LocalLlamaClient:
         if not raw:
             return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
 
+        raw = [
+            (doc, dist)
+            for doc, dist in raw
+            if not self._is_test_code_metadata(dict(doc.metadata or {}))
+        ]
+
+        if not raw:
+            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
+
         vector = [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
         vector = rerank_code_rows_by_scope(vector, query_scope)
 
@@ -535,6 +555,17 @@ class LocalLlamaClient:
             "reranked": reranked,
             "trace": [],
         }
+
+    @staticmethod
+    def _is_test_code_metadata(meta: dict) -> bool:
+        """Return True when metadata points to test-only code paths."""
+        if bool(meta.get("is_test", False)):
+            return True
+
+        file_path = str(meta.get("file_path", "") or "").strip().lower().replace("\\", "/")
+        if not file_path:
+            return False
+        return bool(_TEST_CODE_PATH_PATTERN.search(file_path))
 
     def _code_block_persist_dirs(self) -> list[str]:
         dirs = [

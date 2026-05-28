@@ -160,8 +160,10 @@ _GENERATED_PATTERNS: tuple[re.Pattern, ...] = tuple(
 _TEST_PATTERNS: tuple[re.Pattern, ...] = tuple(
     re.compile(p) for p in [
         r"(^|/)tests?/",
+        r"(^|/)testing/",
         r"(^|/)test_[^/]+$",
         r"(^|/)[^/]+_test\.py$",
+        r"(^|/)testing_[^/]+\.py$",
         r"(^|/)spec/",
         r"(^|/)__tests__/",
         r"\.test\.(js|ts|jsx|tsx)$",
