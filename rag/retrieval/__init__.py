@@ -21,6 +21,7 @@ Support modules:
 """
 
 from rag.retrieval.base import BaseRetriever, RetrievalResult
+from rag.retrieval.code_result_filter import CodeResultFilter
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.code_retriever import CodeRetriever
 from rag.retrieval.hierarchical_code_retriever import HierarchicalCodeRetriever
@@ -36,6 +37,7 @@ from rag.retrieval.pipeline import (
 __all__ = [
     "BaseRetriever",
     "RetrievalResult",
+    "CodeResultFilter",
     "DocumentRetriever",
     "CodeRetriever",
     "HierarchicalCodeRetriever",

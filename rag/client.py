@@ -24,8 +24,8 @@ from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
 from rag.code.graph_store import GraphStore
 from rag.code.indexer import CodeIndexer
-from rag.code.path_rules import is_test_path
 from rag.retrieval.document_retriever import DocumentRetriever
+from rag.retrieval.code_result_filter import CodeResultFilter
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import PipelineBuilder
@@ -35,6 +35,13 @@ from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
+
+_DEFAULT_CODE_RESULT_FILTER = CodeResultFilter()
+
+
+def _resolve_code_result_filter(obj) -> CodeResultFilter:
+    """Resolve an object's configured filter or fall back to default."""
+    return getattr(obj, "_code_result_filter", _DEFAULT_CODE_RESULT_FILTER)
 
 
 class LocalLlamaClient:
@@ -50,8 +57,14 @@ class LocalLlamaClient:
     All knowledge/QA operations delegate to ``self.knowledge``.
     """
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        *,
+        code_result_filter: CodeResultFilter | None = None,
+    ) -> None:
         self.config = config
+        self._code_result_filter = code_result_filter or _DEFAULT_CODE_RESULT_FILTER
         log.info("Initialising LocalLlamaClient")
         log.debug("  embed_base=%s  embed_model=%s", config.embed_base, config.embed_model)
         log.debug("  llm_base=%s    llm_model=%s",   config.llm_base,   config.llm_model)
@@ -435,7 +448,7 @@ class LocalLlamaClient:
                 if not text:
                     continue
                 metadata = dict(meta or {})
-                if exclude_tests and self._is_test_code_metadata(metadata):
+                if exclude_tests and _resolve_code_result_filter(self).is_test_metadata(metadata):
                     continue
                 rows.append({"content": text, "metadata": metadata})
 
@@ -519,11 +532,7 @@ class LocalLlamaClient:
         if not raw:
             return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
 
-        raw = [
-            (doc, dist)
-            for doc, dist in raw
-            if not self._is_test_code_metadata(dict(doc.metadata or {}))
-        ]
+        raw = _resolve_code_result_filter(self).filter_scored_documents(raw, exclude_tests=True)
 
         if not raw:
             return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
@@ -552,12 +561,8 @@ class LocalLlamaClient:
 
     @staticmethod
     def _is_test_code_metadata(meta: dict) -> bool:
-        """Return True when metadata points to test-only code paths."""
-        if bool(meta.get("is_test", False)):
-            return True
-
-        file_path = str(meta.get("file_path", "") or "")
-        return is_test_path(file_path)
+        """Backward-compatible shim; prefer CodeResultFilter in new code."""
+        return _DEFAULT_CODE_RESULT_FILTER.is_test_metadata(meta)
 
     def _code_block_persist_dirs(self) -> list[str]:
         dirs = [
