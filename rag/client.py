@@ -1,5 +1,4 @@
 import os
-import re
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -25,6 +24,7 @@ from rag.memory.research_session import ResearchSessionManager
 from rag.reranker import RerankerFactory
 from rag.code.graph_store import GraphStore
 from rag.code.indexer import CodeIndexer
+from rag.code.path_rules import is_test_path
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
@@ -35,16 +35,6 @@ from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
-
-
-_TEST_CODE_PATH_PATTERN = re.compile(
-    r"(^|/)(tests?|testing|spec|__tests__)(/|$)"
-    r"|(^|/)test_[^/]+$"
-    r"|(^|/)[^/]+_test\.py$"
-    r"|(^|/)testing_[^/]+\.py$"
-    r"|\.test\.(js|ts|jsx|tsx)$"
-    r"|\.spec\.(js|ts|jsx|tsx)$"
-)
 
 
 class LocalLlamaClient:
@@ -396,6 +386,7 @@ class LocalLlamaClient:
         repo_id: str | None = None,
         file_path: str | None = None,
         limit: int = 500,
+        exclude_tests: bool = True,
     ) -> list[dict]:
         """Return code chunks from the ``code_block`` collection.
 
@@ -443,7 +434,10 @@ class LocalLlamaClient:
             for text, meta in zip(docs, metas):
                 if not text:
                     continue
-                rows.append({"content": text, "metadata": meta or {}})
+                metadata = dict(meta or {})
+                if exclude_tests and self._is_test_code_metadata(metadata):
+                    continue
+                rows.append({"content": text, "metadata": metadata})
 
             if rows:
                 return rows
@@ -562,10 +556,8 @@ class LocalLlamaClient:
         if bool(meta.get("is_test", False)):
             return True
 
-        file_path = str(meta.get("file_path", "") or "").strip().lower().replace("\\", "/")
-        if not file_path:
-            return False
-        return bool(_TEST_CODE_PATH_PATTERN.search(file_path))
+        file_path = str(meta.get("file_path", "") or "")
+        return is_test_path(file_path)
 
     def _code_block_persist_dirs(self) -> list[str]:
         dirs = [

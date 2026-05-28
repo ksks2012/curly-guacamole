@@ -43,6 +43,7 @@ except ImportError:  # pragma: no cover
     _HAS_PATHSPEC = False
 
 from utils.logger import AppLogger
+from rag.code.path_rules import is_test_path
 from rag.code.schema import ManifestDiff, RepoFile, RepoManifest
 
 log = AppLogger.get(__name__)
@@ -156,22 +157,6 @@ _GENERATED_PATTERNS: tuple[re.Pattern, ...] = tuple(
     ]
 )
 
-# Regex patterns applied to the *relative POSIX path* to detect test files
-_TEST_PATTERNS: tuple[re.Pattern, ...] = tuple(
-    re.compile(p) for p in [
-        r"(^|/)tests?/",
-        r"(^|/)testing/",
-        r"(^|/)test_[^/]+$",
-        r"(^|/)[^/]+_test\.py$",
-        r"(^|/)testing_[^/]+\.py$",
-        r"(^|/)spec/",
-        r"(^|/)__tests__/",
-        r"\.test\.(js|ts|jsx|tsx)$",
-        r"\.spec\.(js|ts|jsx|tsx)$",
-    ]
-)
-
-
 def _detect_language(path: Path) -> str:
     """Return the programming language label for *path* (empty string = unknown)."""
     name = path.name.lower()
@@ -187,7 +172,7 @@ def _is_generated(rel_posix: str) -> bool:
 
 
 def _is_test(rel_posix: str) -> bool:
-    return any(p.search(rel_posix) for p in _TEST_PATTERNS)
+    return is_test_path(rel_posix)
 
 
 def _sha256(path: Path, chunk_size: int = 65536) -> str:
