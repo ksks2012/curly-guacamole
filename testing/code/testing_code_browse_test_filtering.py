@@ -45,9 +45,9 @@ class _DummyClient:
 
 
 def test_browse_code_blocks_excludes_test_rows_by_default(monkeypatch) -> None:
-    import rag.retrieval.code_retrieval_service as service_module
+    import rag.retrieval.code_block_store as store_module
 
-    monkeypatch.setattr(service_module, "Chroma", _FakeChroma)
+    monkeypatch.setattr(store_module, "Chroma", _FakeChroma)
     c = _DummyClient()
     rows = c.browse_code_blocks(limit=10)
 
@@ -56,9 +56,9 @@ def test_browse_code_blocks_excludes_test_rows_by_default(monkeypatch) -> None:
 
 
 def test_browse_code_blocks_can_include_test_rows(monkeypatch) -> None:
-    import rag.retrieval.code_retrieval_service as service_module
+    import rag.retrieval.code_block_store as store_module
 
-    monkeypatch.setattr(service_module, "Chroma", _FakeChroma)
+    monkeypatch.setattr(store_module, "Chroma", _FakeChroma)
     c = _DummyClient()
     rows = c.browse_code_blocks(limit=10, exclude_tests=False)
 

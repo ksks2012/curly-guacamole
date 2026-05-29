@@ -22,6 +22,7 @@ from rag.memory.store import MemoryStore
 from rag.memory.timeline import KnowledgeTimeline
 from rag.memory.user_memory import UserMemoryManager
 from rag.reranker import RerankerFactory
+from rag.retrieval.collections import resolve_doc_collection_name, resolve_qa_collection_name
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.pipeline import PipelineBuilder
 from rag.retrieval.searcher import Searcher
@@ -124,8 +125,8 @@ def build_model_components(config: AppConfig) -> ModelComponents:
 
 def build_storage_components(config: AppConfig, *, embed: object) -> StorageComponents:
     """Build vector and persistence dependencies shared across subsystems."""
-    collection_name = config.setup_rag_collection or "rag_collection"
-    qa_collection = collection_name + "_qa"
+    collection_name = resolve_doc_collection_name(config.setup_rag_collection)
+    qa_collection = resolve_qa_collection_name(collection_name)
 
     db = Chroma(
         persist_directory=config.persist_directory,
@@ -139,7 +140,7 @@ def build_storage_components(config: AppConfig, *, embed: object) -> StorageComp
     )
     indexer = Indexer(
         db=db,
-        namespace=config.setup_rag_collection,
+        namespace=collection_name,
         db_url=config.db_url,
         batch_limit=config.batch_limit,
     )

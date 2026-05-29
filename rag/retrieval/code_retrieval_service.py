@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
-from rag.code.graph_store import GraphStore
-from rag.code.indexer import CodeIndexer
-from rag.retrieval.base import RetrievalResult
+from rag.retrieval.code_block_store import CodeBlockStore
+from rag.retrieval.code_enrichment_pipeline import CodeEnrichmentPipeline
 from rag.retrieval.code_query_scope import parse_code_query_scope, rerank_code_rows_by_scope
 from rag.retrieval.code_result_filter import CodeResultFilter
-from rag.retrieval.related_code_retriever import RelatedCodeRetriever
+from rag.retrieval.collections import CODE_BLOCK_COLLECTION
 
 
 @dataclass
@@ -24,6 +22,8 @@ class CodeRetrievalService:
     reranker: object
     persist_directory: str
     code_result_filter: CodeResultFilter
+    collection_name: str = CODE_BLOCK_COLLECTION
+    _enrichment_pipeline: CodeEnrichmentPipeline | None = field(default=None, init=False, repr=False)
 
     def code_block_persist_dirs(self) -> list[str]:
         dirs = [
@@ -39,6 +39,22 @@ class CodeRetrievalService:
             seen.add(k)
             out.append(k)
         return out
+
+    def _code_block_store(self) -> CodeBlockStore:
+        return CodeBlockStore(
+            embed=self.embed,
+            persist_dirs=self.code_block_persist_dirs(),
+            collection_name=self.collection_name,
+        )
+
+    def _code_enrichment_pipeline(self) -> CodeEnrichmentPipeline:
+        if self._enrichment_pipeline is None:
+            self._enrichment_pipeline = CodeEnrichmentPipeline(
+                config=self.config,
+                embed=self.embed,
+                block_store=self._code_block_store(),
+            )
+        return self._enrichment_pipeline
 
     def browse_code_blocks(
         self,
@@ -60,15 +76,7 @@ class CodeRetrievalService:
         elif len(conditions) > 1:
             kwargs["where"] = {"$and": conditions}
 
-        for persist_dir in self.code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception:
-                continue
+        for _, block_db in self._code_block_store().iter_databases():
 
             try:
                 result = block_db.get(**kwargs)
@@ -91,16 +99,9 @@ class CodeRetrievalService:
         return []
 
     def list_code_repo_ids(self, *, limit: int = 5000) -> list[str]:
+        """List distinct repo IDs by scanning ``code_block`` collection metadatas."""
         out: set[str] = set()
-        for persist_dir in self.code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception:
-                continue
+        for _, block_db in self._code_block_store().iter_databases():
 
             try:
                 raw = block_db.get(include=["metadatas"], limit=max(1, int(limit)))
@@ -126,15 +127,7 @@ class CodeRetrievalService:
         query_scope = parse_code_query_scope(query)
         semantic_query = query_scope.semantic_query or query
         raw: list[tuple[Document, float]] = []
-        for persist_dir in self.code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception:
-                continue
+        for _, block_db in self._code_block_store().iter_databases():
 
             try:
                 raw = block_db.similarity_search_with_score(semantic_query, k=fetch_k)
@@ -179,94 +172,4 @@ class CodeRetrievalService:
         query: str,
         rows: list[tuple[Document, float]],
     ) -> list[tuple[Document, float]]:
-        if not rows:
-            return rows
-
-        try:
-            graph = GraphStore(self.config.graph_db_path)
-        except Exception:
-            return rows
-
-        candidates = self.code_block_persist_dirs()
-        block_db = None
-        block_persist_dir = ""
-        for persist_dir in candidates:
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-                block_persist_dir = str(persist_dir)
-                break
-            except Exception:
-                continue
-        if block_db is None:
-            return rows
-
-        try:
-            block_indexer = CodeIndexer(block_persist_dir, self.embed)
-        except Exception:
-            block_indexer = None
-
-        class _StaticRetriever:
-            def __init__(
-                self,
-                base_rows: list[tuple[Document, float]],
-                *,
-                indexer: CodeIndexer | None = None,
-            ) -> None:
-                self._base_rows = [
-                    RetrievalResult(
-                        content=doc.page_content,
-                        score=float(score),
-                        source="code",
-                        metadata=dict(doc.metadata or {}),
-                    )
-                    for doc, score in base_rows
-                ]
-                self._indexer = indexer
-
-            def search(self, _query: str, top_k: int = 5, filters=None, repo_ids=None):
-                return self._base_rows[: max(0, int(top_k))]
-
-        def _fetch_block(repo_id: str, target_id: str) -> dict | None:
-            where = {
-                "$and": [
-                    {"repo_id": {"$eq": repo_id}},
-                    {"chunk_id": {"$eq": target_id}},
-                ]
-            }
-            raw = block_db.get(where=where, include=["metadatas"])
-            metas = raw.get("metadatas") or []
-            if not metas:
-                return None
-            return dict(metas[0] or {})
-
-        def _fetch_file_blocks(repo_id: str, file_path: str) -> list[dict]:
-            where = {
-                "$and": [
-                    {"repo_id": {"$eq": repo_id}},
-                    {"file_path": {"$eq": file_path}},
-                ]
-            }
-            raw = block_db.get(where=where, include=["metadatas"])
-            metas = raw.get("metadatas") or []
-            return [dict(m or {}) for m in metas]
-
-        retriever = RelatedCodeRetriever(
-            _StaticRetriever(rows, indexer=block_indexer),
-            graph,
-            block_fetcher=_fetch_block,
-            file_blocks_fetcher=_fetch_file_blocks,
-        )
-
-        try:
-            enriched = retriever.search(query, top_k=len(rows), filters=None)
-        except Exception:
-            return rows
-
-        out: list[tuple[Document, float]] = []
-        for r in enriched:
-            out.append((Document(page_content=r.content, metadata=dict(r.metadata or {})), float(r.score)))
-        return out
+        return self._code_enrichment_pipeline().enrich(query=query, rows=rows)
