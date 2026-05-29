@@ -51,6 +51,7 @@ class _FakeUserMemory:
 class _FakeTimeline:
     def __init__(self):
         self.activities = []
+        self.clear_called = False
 
     def record_activity(self, topics, doc_ids=None, date_str=None):
         self.activities.append({"topics": list(topics), "doc_ids": list(doc_ids or []), "date_str": date_str})
@@ -66,6 +67,10 @@ class _FakeTimeline:
 
     def get_yearly_summary(self, year):
         return {"rag": year}
+
+    def clear(self):
+        self.clear_called = True
+        self.activities.clear()
 
 
 class _FakeResearch:
@@ -167,3 +172,21 @@ def test_memory_gateway_exposes_domain_specific_helpers():
     gateway.research.archive(session.session_id)
 
     assert gateway.retrieve("research", "archived_sessions") == [session.session_id]
+
+
+def test_memory_gateway_clear_timeline_scope_is_supported():
+    timeline = _FakeTimeline()
+    gateway = build_memory_gateway(
+        memory=_FakeConversationMemory(),
+        user_memory=_FakeUserMemory(),
+        timeline=timeline,
+        research=_FakeResearch(),
+    )
+
+    gateway.store("timeline", "activity", {"topics": ["RAG"], "doc_ids": ["doc-1"]})
+    assert len(timeline.activities) == 1
+
+    gateway.clear("timeline")
+
+    assert timeline.clear_called is True
+    assert timeline.activities == []

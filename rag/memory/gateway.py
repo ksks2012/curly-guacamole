@@ -99,7 +99,7 @@ class TimelineMemory(IMemoryManager):
         raise KeyError(f"Unsupported timeline retrieve key: {key}")
 
     def clear(self) -> None:
-        raise NotImplementedError("TimelineMemory does not support bulk clear")
+        self.timeline.clear()
 
     def get_period(self, year: int, month: int | None = None) -> list[dict]:
         return self.timeline.get_period(year, month)

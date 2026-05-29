@@ -498,6 +498,11 @@ class MemoryStore:
             for r in rows
         ]
 
+    def clear_timeline(self) -> None:
+        """Delete all timeline activity entries."""
+        with self._engine.begin() as conn:
+            conn.execute(timeline_table.delete())
+
     # ------------------------------------------------------------------
     # C.4 — Research Sessions
     # ------------------------------------------------------------------

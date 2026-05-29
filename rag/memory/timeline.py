@@ -120,6 +120,11 @@ class KnowledgeTimeline:
             for topic in entry["topics"]:
                 freq[topic] = freq.get(topic, 0) + 1
         return dict(sorted(freq.items(), key=lambda kv: kv[1], reverse=True))
+    
+    def clear(self) -> None:
+        """Delete all timeline entries."""
+        self._store.clear_timeline()
+        log.info("KnowledgeTimeline: all entries cleared")
 
     # ------------------------------------------------------------------
     # Prompt integration
