@@ -12,7 +12,6 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
-from rag.memory.client_facade import ClientMemoryFacade
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.code_retrieval_service import CodeRetrievalService
 from rag.retrieval.code_result_filter import CodeResultFilter
@@ -24,25 +23,6 @@ from rag.retrieval.searcher import Searcher
 log = AppLogger.get(__name__)
 
 _DEFAULT_CODE_RESULT_FILTER = CodeResultFilter()
-_COMPAT_MEMORY_METHODS = {
-    "set_active_project",
-    "infer_project",
-    "get_memory_state",
-    "list_sessions",
-    "clear_memory_session",
-    "switch_memory_session",
-    "get_user_interests",
-    "get_user_profile",
-    "get_timeline_recent",
-    "get_timeline_period",
-    "get_yearly_summary",
-    "start_research_session",
-    "get_research_session",
-    "list_research_sessions",
-    "archive_research_session",
-    "add_research_note",
-    "get_research_notes",
-}
 
 
 def _resolve_code_result_filter(obj) -> CodeResultFilter:
@@ -114,12 +94,6 @@ class LocalLlamaClient:
         self.timeline = components.timeline
         self.research = components.research
         self.memory = components.memory
-        self.memory_facade = ClientMemoryFacade(
-            memory=self.memory,
-            user_memory=self.user_memory,
-            timeline=self.timeline,
-            research=self.research,
-        )
 
         self._code_retrieval = CodeRetrievalService(
             config=self.config,
@@ -192,12 +166,6 @@ class LocalLlamaClient:
     @property
     def linker(self) -> CrossDocLinker:
         return self.knowledge.linker
-
-    def __getattr__(self, name: str):
-        """Keep legacy memory helper methods available via the composed facade."""
-        if name in _COMPAT_MEMORY_METHODS:
-            return getattr(self.memory_facade, name)
-        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
