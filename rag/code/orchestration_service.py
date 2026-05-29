@@ -20,6 +20,7 @@ from rag.code.state_repository import CodeOrchestrationStateRepository
 from rag.code.symbol_store import SymbolStore
 from rag.embeddings import OpenRouterEmbeddings
 from rag.indexer import IndexStats
+from rag.retrieval.code_result_filter import CodeResultFilter
 from utils.config import AppConfig
 from utils.logger import AppLogger
 
@@ -80,9 +81,11 @@ class CodeOrchestrationService:
         graph_store: GraphStore | None = None,
         state_repository: CodeOrchestrationStateRepository | None = None,
         embedding_function=None,
+        code_result_filter: CodeResultFilter | None = None,
     ) -> None:
         self._config = config or AppConfig()
-        self._scanner = scanner or RepoScanner()
+        self._code_result_filter = code_result_filter or CodeResultFilter()
+        self._scanner = scanner or RepoScanner(code_result_filter=self._code_result_filter)
         self._parser = parser or PythonASTParser()
 
         effective_code_root = code_rag_root or persist_directory or self._config.code_rag_root

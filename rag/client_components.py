@@ -24,6 +24,7 @@ from rag.memory.timeline import KnowledgeTimeline
 from rag.memory.user_memory import UserMemoryManager
 from rag.reranker import RerankerFactory
 from rag.retrieval.collections import resolve_doc_collection_name, resolve_qa_collection_name
+from rag.retrieval.code_result_filter import CodeResultFilter
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.pipeline import PipelineBuilder
 from rag.retrieval.searcher import Searcher
@@ -34,6 +35,7 @@ from utils.config import AppConfig
 class ClientComponents:
     """All constructed subsystems needed by LocalLlamaClient."""
 
+    code_result_filter: CodeResultFilter
     embed: object
     db: Chroma
     llm: ChatOpenAI
@@ -262,6 +264,7 @@ def build_memory_components(
 
 def build_client_components(config: AppConfig) -> ClientComponents:
     """Build all subsystems used by LocalLlamaClient through layered factories."""
+    code_result_filter = CodeResultFilter()
     models = build_model_components(config)
     storage = build_storage_components(config, embed=models.embed)
     retrieval = build_retrieval_components(
@@ -284,6 +287,7 @@ def build_client_components(config: AppConfig) -> ClientComponents:
     retrieval.engine.memory = memory.memory
 
     return ClientComponents(
+        code_result_filter=code_result_filter,
         embed=models.embed,
         db=storage.db,
         llm=models.llm,

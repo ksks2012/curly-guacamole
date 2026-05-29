@@ -132,6 +132,7 @@ def test_build_client_components_wires_layer_outputs(monkeypatch):
 
     built = mod.build_client_components(config)
 
+    assert isinstance(built.code_result_filter, mod.CodeResultFilter)
     assert built.embed == "embed"
     assert built.db == "db"
     assert built.indexer == "indexer"

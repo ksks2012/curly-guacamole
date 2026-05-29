@@ -25,11 +25,6 @@ log = AppLogger.get(__name__)
 _DEFAULT_CODE_RESULT_FILTER = CodeResultFilter()
 
 
-def _resolve_code_result_filter(obj) -> CodeResultFilter:
-    """Resolve an object's configured filter or fall back to default."""
-    return getattr(obj, "_code_result_filter", _DEFAULT_CODE_RESULT_FILTER)
-
-
 class LocalLlamaClient:
     """Wires a local embedding server, Chroma vector store, and local LLM.
 
@@ -50,7 +45,6 @@ class LocalLlamaClient:
         code_result_filter: CodeResultFilter | None = None,
     ) -> None:
         self.config = config
-        self._code_result_filter = code_result_filter or _DEFAULT_CODE_RESULT_FILTER
         log.info("Initialising LocalLlamaClient")
         log.debug("  embed_base=%s  embed_model=%s", config.embed_base, config.embed_model)
         log.debug("  llm_base=%s    llm_model=%s",   config.llm_base,   config.llm_model)
@@ -60,6 +54,9 @@ class LocalLlamaClient:
 
         log.info("Building client subsystems")
         components = build_client_components(config)
+
+        # Use one global filter instance unless explicitly overridden.
+        self._code_result_filter = code_result_filter or components.code_result_filter
 
         self.embed = components.embed
         self.persist_directory = config.persist_directory
@@ -101,7 +98,7 @@ class LocalLlamaClient:
             embed=self.embed,
             reranker=self.reranker,
             persist_directory=self.persist_directory,
-            code_result_filter=_resolve_code_result_filter(self),
+            code_result_filter=self._code_result_filter,
         )
 
         log.info("LocalLlamaClient ready")
