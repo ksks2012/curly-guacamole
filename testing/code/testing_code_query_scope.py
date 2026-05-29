@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 
 from rag.client import LocalLlamaClient
 from rag.retrieval.code_query_scope import parse_code_query_scope, rerank_code_rows_by_scope
+from rag.retrieval.code_retrieval_service import CodeRetrievalService
 
 
 def _doc(repo_id: str, file_path: str, name: str) -> Document:
@@ -53,7 +54,7 @@ def test_rerank_code_rows_by_scope_promotes_matching_results():
 
 
 def test_search_code_blocks_uses_soft_scope_parser_and_reranking():
-    source = inspect.getsource(LocalLlamaClient.search_code_blocks)
+    source = inspect.getsource(CodeRetrievalService.search_code_blocks)
     assert "parse_code_query_scope" in source
     assert "rerank_code_rows_by_scope" in source
     assert "semantic_query" in source

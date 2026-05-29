@@ -2,36 +2,22 @@ import os
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
+from rag.client_components import build_client_components
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
 from utils.logger import AppLogger
-from rag.embeddings import OpenRouterEmbeddings
-from rag.engine import RAGEngine
-from rag.indexer import Indexer
-from rag.ingest.document_ingester import DocumentIngester
 from rag.knowledge.clusterer import TopicClusterer
 from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
-from rag.memory.manager          import ConversationMemory
-from rag.memory.store            import MemoryStore
-from rag.memory.user_memory      import UserMemoryManager
-from rag.memory.timeline         import KnowledgeTimeline
-from rag.memory.research_session import ResearchSessionManager
-from rag.reranker import RerankerFactory
-from rag.code.graph_store import GraphStore
-from rag.code.indexer import CodeIndexer
 from rag.retrieval.document_retriever import DocumentRetriever
+from rag.retrieval.code_retrieval_service import CodeRetrievalService
 from rag.retrieval.code_result_filter import CodeResultFilter
 from rag.retrieval.filters import SearchFilter
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import PipelineBuilder
-from rag.retrieval.base import RetrievalResult
-from rag.retrieval.code_query_scope import parse_code_query_scope, rerank_code_rows_by_scope
-from rag.retrieval.related_code_retriever import RelatedCodeRetriever
 from rag.retrieval.searcher import Searcher
 
 log = AppLogger.get(__name__)
@@ -72,124 +58,50 @@ class LocalLlamaClient:
         log.debug("  db_url=%s",                      config.db_url)
         log.debug("  reranker_type=%s",               config.reranker_type)
 
-        log.info("Building embeddings client → %s (provider=%s)", config.embed_base, config.model_provider)
-        if config.model_provider == "openrouter":
-            self.embed = OpenRouterEmbeddings(
-                model=config.embed_model,
-                api_key=config.embed_api_key,
-                base_url=config.embed_base,
-                requests_per_minute=config.requests_rate_limit,
-            )
-        else:
-            self.embed = OpenAIEmbeddings(
-                openai_api_key=config.embed_api_key,
-                openai_api_base=config.embed_base,
-                model=config.embed_model,
-            )
+        log.info("Building client subsystems")
+        components = build_client_components(config)
 
-        log.info("Opening Chroma store → %s  collection=%s",
-                 config.persist_directory, config.setup_rag_collection)
+        self.embed = components.embed
         self.persist_directory = config.persist_directory
-        self.db = Chroma(
-            persist_directory=config.persist_directory,
-            embedding_function=self.embed,
-            collection_name=config.setup_rag_collection or "rag_collection",
-        )
-        log.info("Chroma store ready")
-
-        log.info("Building LLM client → %s", config.llm_base)
-        self.llm = ChatOpenAI(
-            base_url=config.llm_base,
-            api_key=config.llm_api_key,
-            model=config.llm_model,
-            **config.llm_kwargs,
-        )
-
-        self.indexer  = Indexer(
-            db=self.db,
-            namespace=config.setup_rag_collection,
-            db_url=config.db_url,
-            batch_limit=config.batch_limit,
-        )
-        self.ingester = DocumentIngester(embeddings=self.embed)
-        self.reranker = RerankerFactory.build(config, llm=self.llm)
+        self.db = components.db
+        self.llm = components.llm
+        self.indexer = components.indexer
+        self.ingester = components.ingester
+        self.reranker = components.reranker
+        self.searcher = components.searcher
         log.info("Reranker: %s", type(self.reranker).__name__ if self.reranker else "disabled")
-
-        self.searcher = Searcher(db=self.db, reranker=self.reranker)
 
         # ── Unified Retrieval Layer ────────────────────────────────────────
         # doc_retriever is always available after __init__.
         # code_retriever starts as None; call attach_code_retriever() after
         # a CodeIndexer is ready to enable cross-domain unified search.
-        self.doc_retriever: DocumentRetriever = DocumentRetriever(
-            self.searcher,
-            use_hybrid=False,   # matches previous engine default
-            reranker=self.reranker,
-        )
+        self.doc_retriever: DocumentRetriever = components.doc_retriever
         self.code_retriever = None   # set via attach_code_retriever()
 
         # Build canonical pipelines via PipelineBuilder.
         # doc_pipeline is always available; unified_pipeline is rebuilt when
         # a CodeRetriever is attached.
-        self.doc_pipeline = PipelineBuilder.document_pipeline(
-            self.doc_retriever,
-            reranker=self.reranker,
-        )
+        self.doc_pipeline = components.doc_pipeline
         self.unified_pipeline = self.doc_pipeline   # updated by _rebuild_unified()
 
         # Convenience aliases — keep unified_retriever/doc_retriever for callers
         # that accessed them directly in Step 1.3 tests.
         self.unified_retriever = self.doc_retriever  # updated by _rebuild_unified()
 
-        # RAGEngine now receives the doc_pipeline by default.
-        self.engine = RAGEngine(
-            llm=self.llm,
-            retriever=self.doc_pipeline,
+        self.engine = components.engine
+        self.knowledge = components.knowledge
+        self.user_memory = components.user_memory
+        self.timeline = components.timeline
+        self.research = components.research
+        self.memory = components.memory
+
+        self._code_retrieval = CodeRetrievalService(
+            config=self.config,
+            embed=self.embed,
             reranker=self.reranker,
-            config=config,
+            persist_directory=self.persist_directory,
+            code_result_filter=_resolve_code_result_filter(self),
         )
-
-        _qa_collection = (config.setup_rag_collection or "rag_collection") + "_qa"
-        _qa_db = Chroma(
-            persist_directory=config.persist_directory,
-            embedding_function=self.embed,
-            collection_name=_qa_collection,
-        )
-        self.knowledge = KnowledgeManager(
-            db=self.db,
-            qa_db=_qa_db,
-            qa_indexer=Indexer(
-                db=_qa_db,
-                namespace=_qa_collection,
-                db_url=config.db_url,
-                batch_limit=config.batch_limit,
-            ),
-            extractor=KnowledgeExtractor(self.llm),
-            qa_generator=QAGenerator(self.llm),
-            clusterer=TopicClusterer(llm=self.llm, db=self.db),
-            linker=CrossDocLinker(db=self.db),
-        )
-
-        # Stage C — Memory subsystems (C.1 + C.2 + C.3 + C.4)
-        _mem_store        = MemoryStore(db_path=config.memory_db_path)
-        self.user_memory  = UserMemoryManager(store=_mem_store)
-        self.timeline     = KnowledgeTimeline(store=_mem_store)
-        self.research     = ResearchSessionManager(store=_mem_store)
-        self.memory       = ConversationMemory(
-            store=_mem_store,
-            llm=self.llm,
-            session_id=config.memory_default_session,
-            max_recent=config.memory_max_recent,
-            max_topics=config.memory_max_topics,
-            extract_topics=config.memory_extract_topics,
-            auto_infer_project=config.memory_auto_infer_project,
-            user_memory=self.user_memory,
-            timeline=self.timeline,
-            research=self.research,
-        )
-        self.memory.ensure_session()
-        # Wire memory into the RAG engine so every answer_query() auto-updates it
-        self.engine.memory = self.memory
 
         log.info("LocalLlamaClient ready")
 
@@ -407,86 +319,16 @@ class LocalLlamaClient:
             - ``content``  : full code text
             - ``metadata`` : stored CodeChunk metadata
         """
-        conditions: list[dict] = []
-        if repo_id:
-            conditions.append({"repo_id": {"$eq": repo_id}})
-        if file_path:
-            conditions.append({"file_path": {"$eq": file_path}})
-
-        kwargs: dict = {"include": ["documents", "metadatas"], "limit": limit}
-        if len(conditions) == 1:
-            kwargs["where"] = conditions[0]
-        elif len(conditions) > 1:
-            kwargs["where"] = {"$and": conditions}
-
-        for persist_dir in self._code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception as exc:
-                log.warning(
-                    "browse_code_blocks: cannot open code_block collection dir=%s error=%s",
-                    persist_dir,
-                    exc,
-                )
-                continue
-
-            try:
-                result = block_db.get(**kwargs)
-            except Exception as exc:
-                log.warning("browse_code_blocks: query failed dir=%s error=%s", persist_dir, exc)
-                continue
-
-            docs = result.get("documents") or []
-            metas = result.get("metadatas") or []
-
-            rows: list[dict] = []
-            for text, meta in zip(docs, metas):
-                if not text:
-                    continue
-                metadata = dict(meta or {})
-                if exclude_tests and _resolve_code_result_filter(self).is_test_metadata(metadata):
-                    continue
-                rows.append({"content": text, "metadata": metadata})
-
-            if rows:
-                return rows
-
-        return []
+        return self._code_retrieval.browse_code_blocks(
+            repo_id=repo_id,
+            file_path=file_path,
+            limit=limit,
+            exclude_tests=exclude_tests,
+        )
 
     def list_code_repo_ids(self, *, limit: int = 5000) -> list[str]:
         """Return distinct repo_id values found in ``code_block`` metadata."""
-        out: set[str] = set()
-        for persist_dir in self._code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception as exc:
-                log.warning(
-                    "list_code_repo_ids: cannot open code_block collection dir=%s error=%s",
-                    persist_dir,
-                    exc,
-                )
-                continue
-
-            try:
-                raw = block_db.get(include=["metadatas"], limit=max(1, int(limit)))
-            except Exception as exc:
-                log.warning("list_code_repo_ids: query failed dir=%s error=%s", persist_dir, exc)
-                continue
-
-            for meta in (raw.get("metadatas") or []):
-                repo_id = str((meta or {}).get("repo_id", "")).strip()
-                if repo_id:
-                    out.add(repo_id)
-
-        return sorted(out)
+        return self._code_retrieval.list_code_repo_ids(limit=limit)
 
     def search_code_blocks(
         self,
@@ -502,62 +344,13 @@ class LocalLlamaClient:
         Returns a dashboard-compatible payload:
             {"vector", "bm25", "hybrid", "reranked", "trace"}
         """
-        query_scope = parse_code_query_scope(query)
-        semantic_query = query_scope.semantic_query or query
-        raw: list[tuple[Document, float]] = []
-        for persist_dir in self._code_block_persist_dirs():
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-            except Exception as exc:
-                log.warning(
-                    "search_code_blocks: cannot open code_block collection dir=%s error=%s",
-                    persist_dir,
-                    exc,
-                )
-                continue
-
-            try:
-                raw = block_db.similarity_search_with_score(semantic_query, k=fetch_k)
-            except Exception as exc:
-                log.warning("search_code_blocks: query failed dir=%s error=%s", persist_dir, exc)
-                continue
-
-            if raw:
-                break
-
-        if not raw:
-            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
-
-        raw = _resolve_code_result_filter(self).filter_scored_documents(raw, exclude_tests=True)
-
-        if not raw:
-            return {"vector": [], "bm25": None, "hybrid": None, "reranked": None, "trace": []}
-
-        vector = [(doc, round(1 / (1 + dist), 4)) for doc, dist in raw]
-        vector = rerank_code_rows_by_scope(vector, query_scope)
-
-        if include_relations:
-            vector = self._enrich_code_results_with_relations(query=semantic_query, rows=vector)
-
-        reranked = None
-        if use_rerank and self.reranker is not None:
-            reranked = self.reranker.rerank_with_scores(
-                semantic_query,
-                [doc for doc, _ in vector],
-                top_k=k,
-            )
-
-        return {
-            "vector": vector,
-            "bm25": None,
-            "hybrid": None,
-            "reranked": reranked,
-            "trace": [],
-        }
+        return self._code_retrieval.search_code_blocks(
+            query,
+            k=k,
+            fetch_k=fetch_k,
+            use_rerank=use_rerank,
+            include_relations=include_relations,
+        )
 
     @staticmethod
     def _is_test_code_metadata(meta: dict) -> bool:
@@ -565,19 +358,7 @@ class LocalLlamaClient:
         return _DEFAULT_CODE_RESULT_FILTER.is_test_metadata(meta)
 
     def _code_block_persist_dirs(self) -> list[str]:
-        dirs = [
-            str(self.config.code_rag_root),
-            str(self.persist_directory),
-        ]
-        out: list[str] = []
-        seen: set[str] = set()
-        for d in dirs:
-            k = str(d).strip()
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            out.append(k)
-        return out
+        return self._code_retrieval.code_block_persist_dirs()
 
     def _enrich_code_results_with_relations(
         self,
@@ -585,101 +366,7 @@ class LocalLlamaClient:
         query: str,
         rows: list[tuple[Document, float]],
     ) -> list[tuple[Document, float]]:
-        if not rows:
-            return rows
-
-        try:
-            graph = GraphStore(self.config.graph_db_path)
-        except Exception as exc:
-            log.warning("search_code_blocks: relation graph unavailable: %s", exc)
-            return rows
-
-        candidates = self._code_block_persist_dirs()
-        block_db = None
-        block_persist_dir = ""
-        for persist_dir in candidates:
-            try:
-                block_db = Chroma(
-                    persist_directory=persist_dir,
-                    embedding_function=self.embed,
-                    collection_name="code_block",
-                )
-                block_persist_dir = str(persist_dir)
-                break
-            except Exception:
-                continue
-        if block_db is None:
-            return rows
-
-        try:
-            block_indexer = CodeIndexer(block_persist_dir, self.embed)
-        except Exception:
-            block_indexer = None
-
-        class _StaticRetriever:
-            def __init__(
-                self,
-                base_rows: list[tuple[Document, float]],
-                *,
-                indexer: CodeIndexer | None = None,
-            ) -> None:
-                self._base_rows = [
-                    RetrievalResult(
-                        content=doc.page_content,
-                        score=float(score),
-                        source="code",
-                        metadata=dict(doc.metadata or {}),
-                    )
-                    for doc, score in base_rows
-                ]
-                # Expose an indexer so RelatedCodeRetriever can resolve import targets
-                # through its internal block-db fallback path.
-                self._indexer = indexer
-
-            def search(self, _query: str, top_k: int = 5, filters=None, repo_ids=None):
-                return self._base_rows[: max(0, int(top_k))]
-
-        def _fetch_block(repo_id: str, target_id: str) -> dict | None:
-            where = {
-                "$and": [
-                    {"repo_id": {"$eq": repo_id}},
-                    {"chunk_id": {"$eq": target_id}},
-                ]
-            }
-            raw = block_db.get(where=where, include=["metadatas"])
-            metas = raw.get("metadatas") or []
-            if not metas:
-                return None
-            return dict(metas[0] or {})
-
-        def _fetch_file_blocks(repo_id: str, file_path: str) -> list[dict]:
-            where = {
-                "$and": [
-                    {"repo_id": {"$eq": repo_id}},
-                    {"file_path": {"$eq": file_path}},
-                ]
-            }
-            raw = block_db.get(where=where, include=["metadatas"])
-            metas = raw.get("metadatas") or []
-            return [dict(m or {}) for m in metas]
-
-        retriever = RelatedCodeRetriever(
-            _StaticRetriever(rows, indexer=block_indexer),
-            graph,
-            block_fetcher=_fetch_block,
-            file_blocks_fetcher=_fetch_file_blocks,
-        )
-
-        try:
-            enriched = retriever.search(query, top_k=len(rows), filters=None)
-        except Exception as exc:
-            log.warning("search_code_blocks: relation enrichment failed: %s", exc)
-            return rows
-
-        out: list[tuple[Document, float]] = []
-        for r in enriched:
-            out.append((Document(page_content=r.content, metadata=dict(r.metadata or {})), float(r.score)))
-        return out
+        return self._code_retrieval.enrich_code_results_with_relations(query=query, rows=rows)
 
     def rebuild_bm25(self) -> None:
         self.searcher.rebuild_bm25()

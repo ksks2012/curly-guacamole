@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 
 from rag.client import LocalLlamaClient
+from rag.retrieval.code_retrieval_service import CodeRetrievalService
 
 
 def test_search_code_blocks_accepts_include_relations_param():
@@ -16,10 +17,9 @@ def test_search_code_blocks_accepts_include_relations_param():
 
 def test_search_code_blocks_calls_enrich_when_include_relations_true():
     """Verify method routing for include_relations=True via introspection."""
-    # Check that the method has the _enrich_code_results_with_relations path
-    source = inspect.getsource(LocalLlamaClient.search_code_blocks)
+    source = inspect.getsource(CodeRetrievalService.search_code_blocks)
     assert "include_relations" in source
-    assert "_enrich_code_results_with_relations" in source
+    assert "enrich_code_results_with_relations" in source
     assert "if include_relations:" in source
 
 

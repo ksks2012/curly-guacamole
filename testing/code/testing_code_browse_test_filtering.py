@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from rag.client import LocalLlamaClient
+from rag.retrieval.code_result_filter import CodeResultFilter
+from rag.retrieval.code_retrieval_service import CodeRetrievalService
 
 
 class _FakeChroma:
@@ -31,12 +33,21 @@ class _DummyClient:
 
     def __init__(self):
         self.embed = object()
+        self.config = SimpleNamespace(code_rag_root="/tmp/code_rag", graph_db_path="/tmp/graph.db")
+        self.persist_directory = "/tmp/code_rag"
+        self._code_retrieval = CodeRetrievalService(
+            config=self.config,
+            embed=self.embed,
+            reranker=None,
+            persist_directory=self.persist_directory,
+            code_result_filter=CodeResultFilter(),
+        )
 
 
 def test_browse_code_blocks_excludes_test_rows_by_default(monkeypatch) -> None:
-    import rag.client as client_module
+    import rag.retrieval.code_retrieval_service as service_module
 
-    monkeypatch.setattr(client_module, "Chroma", _FakeChroma)
+    monkeypatch.setattr(service_module, "Chroma", _FakeChroma)
     c = _DummyClient()
     rows = c.browse_code_blocks(limit=10)
 
@@ -45,9 +56,9 @@ def test_browse_code_blocks_excludes_test_rows_by_default(monkeypatch) -> None:
 
 
 def test_browse_code_blocks_can_include_test_rows(monkeypatch) -> None:
-    import rag.client as client_module
+    import rag.retrieval.code_retrieval_service as service_module
 
-    monkeypatch.setattr(client_module, "Chroma", _FakeChroma)
+    monkeypatch.setattr(service_module, "Chroma", _FakeChroma)
     c = _DummyClient()
     rows = c.browse_code_blocks(limit=10, exclude_tests=False)
 
