@@ -49,8 +49,56 @@ class ClientComponents:
     memory: ConversationMemory
 
 
-def build_client_components(config: AppConfig) -> ClientComponents:
-    """Build all subsystems used by LocalLlamaClient."""
+@dataclass
+class ModelComponents:
+    """Model-layer dependencies used across client subsystems."""
+
+    embed: object
+    llm: ChatOpenAI
+
+
+@dataclass
+class StorageComponents:
+    """Storage-layer dependencies shared by retrieval and knowledge flows."""
+
+    db: Chroma
+    qa_db: Chroma
+    indexer: Indexer
+    qa_indexer: Indexer
+    mem_store: MemoryStore
+
+
+@dataclass
+class RetrievalComponents:
+    """Retrieval-layer dependencies used by the engine."""
+
+    ingester: DocumentIngester
+    reranker: object
+    searcher: Searcher
+    doc_retriever: DocumentRetriever
+    doc_pipeline: object
+    engine: RAGEngine
+
+
+@dataclass
+class KnowledgeComponents:
+    """Knowledge-layer dependencies for enrichment and QA."""
+
+    knowledge: KnowledgeManager
+
+
+@dataclass
+class MemoryComponents:
+    """Memory-layer dependencies for conversation and research state."""
+
+    user_memory: UserMemoryManager
+    timeline: KnowledgeTimeline
+    research: ResearchSessionManager
+    memory: ConversationMemory
+
+
+def build_model_components(config: AppConfig) -> ModelComponents:
+    """Build embedding and chat model dependencies."""
     if config.model_provider == "openrouter":
         embed = OpenRouterEmbeddings(
             model=config.embed_model,
@@ -65,29 +113,64 @@ def build_client_components(config: AppConfig) -> ClientComponents:
             model=config.embed_model,
         )
 
-    db = Chroma(
-        persist_directory=config.persist_directory,
-        embedding_function=embed,
-        collection_name=config.setup_rag_collection or "rag_collection",
-    )
-
     llm = ChatOpenAI(
         base_url=config.llm_base,
         api_key=config.llm_api_key,
         model=config.llm_model,
         **config.llm_kwargs,
     )
+    return ModelComponents(embed=embed, llm=llm)
 
+
+def build_storage_components(config: AppConfig, *, embed: object) -> StorageComponents:
+    """Build vector and persistence dependencies shared across subsystems."""
+    collection_name = config.setup_rag_collection or "rag_collection"
+    qa_collection = collection_name + "_qa"
+
+    db = Chroma(
+        persist_directory=config.persist_directory,
+        embedding_function=embed,
+        collection_name=collection_name,
+    )
+    qa_db = Chroma(
+        persist_directory=config.persist_directory,
+        embedding_function=embed,
+        collection_name=qa_collection,
+    )
     indexer = Indexer(
         db=db,
         namespace=config.setup_rag_collection,
         db_url=config.db_url,
         batch_limit=config.batch_limit,
     )
+    qa_indexer = Indexer(
+        db=qa_db,
+        namespace=qa_collection,
+        db_url=config.db_url,
+        batch_limit=config.batch_limit,
+    )
+    mem_store = MemoryStore(db_path=config.memory_db_path)
+
+    return StorageComponents(
+        db=db,
+        qa_db=qa_db,
+        indexer=indexer,
+        qa_indexer=qa_indexer,
+        mem_store=mem_store,
+    )
+
+
+def build_retrieval_components(
+    config: AppConfig,
+    *,
+    embed: object,
+    llm: ChatOpenAI,
+    db: Chroma,
+) -> RetrievalComponents:
+    """Build retrieval-layer dependencies and the default document engine."""
     ingester = DocumentIngester(embeddings=embed)
     reranker = RerankerFactory.build(config, llm=llm)
     searcher = Searcher(db=db, reranker=reranker)
-
     doc_retriever = DocumentRetriever(
         searcher,
         use_hybrid=False,
@@ -97,7 +180,6 @@ def build_client_components(config: AppConfig) -> ClientComponents:
         doc_retriever,
         reranker=reranker,
     )
-
     engine = RAGEngine(
         llm=llm,
         retriever=doc_pipeline,
@@ -105,28 +187,43 @@ def build_client_components(config: AppConfig) -> ClientComponents:
         config=config,
     )
 
-    qa_collection = (config.setup_rag_collection or "rag_collection") + "_qa"
-    qa_db = Chroma(
-        persist_directory=config.persist_directory,
-        embedding_function=embed,
-        collection_name=qa_collection,
+    return RetrievalComponents(
+        ingester=ingester,
+        reranker=reranker,
+        searcher=searcher,
+        doc_retriever=doc_retriever,
+        doc_pipeline=doc_pipeline,
+        engine=engine,
     )
+
+
+def build_knowledge_components(
+    *,
+    llm: ChatOpenAI,
+    db: Chroma,
+    qa_db: Chroma,
+    qa_indexer: Indexer,
+) -> KnowledgeComponents:
+    """Build knowledge-enrichment and QA dependencies."""
     knowledge = KnowledgeManager(
         db=db,
         qa_db=qa_db,
-        qa_indexer=Indexer(
-            db=qa_db,
-            namespace=qa_collection,
-            db_url=config.db_url,
-            batch_limit=config.batch_limit,
-        ),
+        qa_indexer=qa_indexer,
         extractor=KnowledgeExtractor(llm),
         qa_generator=QAGenerator(llm),
         clusterer=TopicClusterer(llm=llm, db=db),
         linker=CrossDocLinker(db=db),
     )
+    return KnowledgeComponents(knowledge=knowledge)
 
-    mem_store = MemoryStore(db_path=config.memory_db_path)
+
+def build_memory_components(
+    config: AppConfig,
+    *,
+    llm: ChatOpenAI,
+    mem_store: MemoryStore,
+) -> MemoryComponents:
+    """Build memory, profile, timeline, and research-session dependencies."""
     user_memory = UserMemoryManager(store=mem_store)
     timeline = KnowledgeTimeline(store=mem_store)
     research = ResearchSessionManager(store=mem_store)
@@ -143,22 +240,52 @@ def build_client_components(config: AppConfig) -> ClientComponents:
         research=research,
     )
     memory.ensure_session()
-    engine.memory = memory
 
-    return ClientComponents(
-        embed=embed,
-        db=db,
-        llm=llm,
-        indexer=indexer,
-        ingester=ingester,
-        reranker=reranker,
-        searcher=searcher,
-        doc_retriever=doc_retriever,
-        doc_pipeline=doc_pipeline,
-        engine=engine,
-        knowledge=knowledge,
+    return MemoryComponents(
         user_memory=user_memory,
         timeline=timeline,
         research=research,
         memory=memory,
+    )
+
+
+def build_client_components(config: AppConfig) -> ClientComponents:
+    """Build all subsystems used by LocalLlamaClient through layered factories."""
+    models = build_model_components(config)
+    storage = build_storage_components(config, embed=models.embed)
+    retrieval = build_retrieval_components(
+        config,
+        embed=models.embed,
+        llm=models.llm,
+        db=storage.db,
+    )
+    knowledge = build_knowledge_components(
+        llm=models.llm,
+        db=storage.db,
+        qa_db=storage.qa_db,
+        qa_indexer=storage.qa_indexer,
+    )
+    memory = build_memory_components(
+        config,
+        llm=models.llm,
+        mem_store=storage.mem_store,
+    )
+    retrieval.engine.memory = memory.memory
+
+    return ClientComponents(
+        embed=models.embed,
+        db=storage.db,
+        llm=models.llm,
+        indexer=storage.indexer,
+        ingester=retrieval.ingester,
+        reranker=retrieval.reranker,
+        searcher=retrieval.searcher,
+        doc_retriever=retrieval.doc_retriever,
+        doc_pipeline=retrieval.doc_pipeline,
+        engine=retrieval.engine,
+        knowledge=knowledge.knowledge,
+        user_memory=memory.user_memory,
+        timeline=memory.timeline,
+        research=memory.research,
+        memory=memory.memory,
     )
