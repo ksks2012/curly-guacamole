@@ -12,6 +12,7 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
+from rag.memory.client_facade import ClientMemoryFacade
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.code_retrieval_service import CodeRetrievalService
 from rag.retrieval.code_result_filter import CodeResultFilter
@@ -23,6 +24,25 @@ from rag.retrieval.searcher import Searcher
 log = AppLogger.get(__name__)
 
 _DEFAULT_CODE_RESULT_FILTER = CodeResultFilter()
+_COMPAT_MEMORY_METHODS = {
+    "set_active_project",
+    "infer_project",
+    "get_memory_state",
+    "list_sessions",
+    "clear_memory_session",
+    "switch_memory_session",
+    "get_user_interests",
+    "get_user_profile",
+    "get_timeline_recent",
+    "get_timeline_period",
+    "get_yearly_summary",
+    "start_research_session",
+    "get_research_session",
+    "list_research_sessions",
+    "archive_research_session",
+    "add_research_note",
+    "get_research_notes",
+}
 
 
 def _resolve_code_result_filter(obj) -> CodeResultFilter:
@@ -94,6 +114,12 @@ class LocalLlamaClient:
         self.timeline = components.timeline
         self.research = components.research
         self.memory = components.memory
+        self.memory_facade = ClientMemoryFacade(
+            memory=self.memory,
+            user_memory=self.user_memory,
+            timeline=self.timeline,
+            research=self.research,
+        )
 
         self._code_retrieval = CodeRetrievalService(
             config=self.config,
@@ -167,91 +193,11 @@ class LocalLlamaClient:
     def linker(self) -> CrossDocLinker:
         return self.knowledge.linker
 
-    # ------------------------------------------------------------------
-    # Memory shims — delegate to ConversationMemory
-    # ------------------------------------------------------------------
-
-    def set_active_project(self, project: str) -> None:
-        self.memory.set_active_project(project)
-
-    def infer_project(self) -> str:
-        return self.memory.infer_project()
-
-    def get_memory_state(self):
-        return self.memory.get_state()
-
-    def list_sessions(self) -> list[dict]:
-        return self.memory.list_sessions()
-
-    def clear_memory_session(self) -> None:
-        self.memory.clear_session()
-
-    def switch_memory_session(self, session_id: str) -> None:
-        self.memory.ensure_session(session_id)
-
-    # ------------------------------------------------------------------
-    # User Memory shims (C.2)
-    # ------------------------------------------------------------------
-
-    def get_user_interests(self, n: int = 10) -> list[dict]:
-        """Return top *n* user research interests by recency-weighted score."""
-        return self.user_memory.get_top_interests(n)
-
-    def get_user_profile(self):
-        """Return a UserProfile snapshot."""
-        return self.user_memory.get_profile()
-
-    # ------------------------------------------------------------------
-    # Timeline shims (C.3)
-    # ------------------------------------------------------------------
-
-    def get_timeline_recent(self, days: int = 30) -> list[dict]:
-        """Return daily timeline entries for the last *days* days."""
-        return self.timeline.get_recent(days)
-
-    def get_timeline_period(self, year: int, month: int | None = None) -> list[dict]:
-        """Return timeline entries for *year* (or *year*+*month*)."""
-        return self.timeline.get_period(year, month)
-
-    def get_yearly_summary(self, year: int) -> dict[str, int]:
-        """Return ``{topic: appearance_count}`` for *year*, descending."""
-        return self.timeline.get_yearly_summary(year)
-
-    # ------------------------------------------------------------------
-    # Research Session shims (C.4)
-    # ------------------------------------------------------------------
-
-    def start_research_session(self, name: str, tags: list[str] = [], set_active: bool = True):
-        """Create a new research session and optionally set it as active."""
-        from rag.memory.research_session import ResearchSession
-        session: ResearchSession = self.research.create(name, tags=tags)
-        if set_active:
-            self.research.set_active(session.session_id)
-        return session
-
-    def get_research_session(self, session_id: str | None = None):
-        """Return the active session (or by *session_id*)."""
-        if session_id:
-            return self.research.get(session_id)
-        return self.research.get_active_session()
-
-    def list_research_sessions(self, archived: bool = False) -> list:
-        """List active (or archived) research sessions."""
-        return self.research.list_archived() if archived else self.research.list_active()
-
-    def archive_research_session(self, session_id: str | None = None) -> None:
-        """Archive a session (defaults to the active one)."""
-        sid = session_id or self.research.active_session_id
-        if sid:
-            self.research.archive(sid)
-
-    def add_research_note(self, content: str, source_doc_ids: list[str] = [], session_id: str | None = None):
-        """Add a note to the active research session (or *session_id*)."""
-        return self.research.add_note(content, session_id=session_id, source_doc_ids=source_doc_ids)
-
-    def get_research_notes(self, session_id: str | None = None) -> list:
-        """Return all notes for the active session (or *session_id*)."""
-        return self.research.get_notes(session_id)
+    def __getattr__(self, name: str):
+        """Keep legacy memory helper methods available via the composed facade."""
+        if name in _COMPAT_MEMORY_METHODS:
+            return getattr(self.memory_facade, name)
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
 
     # ------------------------------------------------------------------
     # Retrieval — delegate to Searcher
