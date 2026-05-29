@@ -90,6 +90,7 @@ class LocalLlamaClient:
 
         self.engine = components.engine
         self.knowledge = components.knowledge
+        self.memory_manager = components.memory_manager
         self.user_memory = components.user_memory
         self.timeline = components.timeline
         self.research = components.research

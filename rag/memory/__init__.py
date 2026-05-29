@@ -16,6 +16,15 @@ Public surface:
 """
 
 from rag.memory.models           import ConversationTurn, SessionState
+from rag.memory.gateway          import (
+    IMemoryManager,
+    ConversationHistoryMemory,
+    UserProfileMemory as UserProfileMemoryGateway,
+    TimelineMemory,
+    ResearchContextMemory,
+    MemoryGateway,
+    build_memory_gateway,
+)
 from rag.memory.store            import MemoryStore
 from rag.memory.manager          import ConversationMemory
 from rag.memory.user_memory      import UserMemoryManager, UserProfile
@@ -24,6 +33,13 @@ from rag.memory.research_session import ResearchSessionManager, ResearchSession,
 
 __all__ = [
     "ConversationMemory",
+    "IMemoryManager",
+    "ConversationHistoryMemory",
+    "UserProfileMemoryGateway",
+    "TimelineMemory",
+    "ResearchContextMemory",
+    "MemoryGateway",
+    "build_memory_gateway",
     "MemoryStore",
     "SessionState",
     "ConversationTurn",

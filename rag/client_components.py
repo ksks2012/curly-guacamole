@@ -16,6 +16,7 @@ from rag.knowledge.extractor import KnowledgeExtractor
 from rag.knowledge.linker import CrossDocLinker
 from rag.knowledge.manager import KnowledgeManager
 from rag.knowledge.qa_generator import QAGenerator
+from rag.memory.gateway import MemoryGateway, build_memory_gateway
 from rag.memory.manager import ConversationMemory
 from rag.memory.research_session import ResearchSessionManager
 from rag.memory.store import MemoryStore
@@ -44,6 +45,7 @@ class ClientComponents:
     doc_pipeline: object
     engine: RAGEngine
     knowledge: KnowledgeManager
+    memory_manager: MemoryGateway
     user_memory: UserMemoryManager
     timeline: KnowledgeTimeline
     research: ResearchSessionManager
@@ -92,6 +94,7 @@ class KnowledgeComponents:
 class MemoryComponents:
     """Memory-layer dependencies for conversation and research state."""
 
+    memory_manager: MemoryGateway
     user_memory: UserMemoryManager
     timeline: KnowledgeTimeline
     research: ResearchSessionManager
@@ -241,8 +244,15 @@ def build_memory_components(
         research=research,
     )
     memory.ensure_session()
+    memory_manager = build_memory_gateway(
+        memory=memory,
+        user_memory=user_memory,
+        timeline=timeline,
+        research=research,
+    )
 
     return MemoryComponents(
+        memory_manager=memory_manager,
         user_memory=user_memory,
         timeline=timeline,
         research=research,
@@ -285,6 +295,7 @@ def build_client_components(config: AppConfig) -> ClientComponents:
         doc_pipeline=retrieval.doc_pipeline,
         engine=retrieval.engine,
         knowledge=knowledge.knowledge,
+        memory_manager=memory.memory_manager,
         user_memory=memory.user_memory,
         timeline=memory.timeline,
         research=memory.research,

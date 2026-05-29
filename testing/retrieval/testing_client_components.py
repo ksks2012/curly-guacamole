@@ -105,6 +105,7 @@ def test_build_client_components_wires_layer_outputs(monkeypatch):
     )
     knowledge = mod.KnowledgeComponents(knowledge="knowledge")
     memory = mod.MemoryComponents(
+        memory_manager="memory_manager",
         user_memory="user_memory",
         timeline="timeline",
         research="research",
@@ -136,5 +137,6 @@ def test_build_client_components_wires_layer_outputs(monkeypatch):
     assert built.indexer == "indexer"
     assert built.engine is engine
     assert built.knowledge == "knowledge"
+    assert built.memory_manager == "memory_manager"
     assert built.memory == "memory"
     assert engine.memory == "memory"
