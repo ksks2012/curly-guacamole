@@ -511,9 +511,10 @@ class MemoryStore:
         self,
         session_id: str,
         name:       str,
-        tags:       list[str] = [],
+        tags:       list[str] | None = None,
     ) -> None:
         """Insert a new research session row."""
+        resolved_tags = list(tags or [])
         now = _utcnow()
         with self._engine.begin() as conn:
             conn.execute(
@@ -521,7 +522,7 @@ class MemoryStore:
                     session_id=session_id,
                     name=name,
                     status="active",
-                    tags=json.dumps(tags),
+                    tags=json.dumps(resolved_tags),
                     doc_ids=json.dumps([]),
                     queries=json.dumps([]),
                     created_at=now,
@@ -577,9 +578,10 @@ class MemoryStore:
         self,
         session_id: str,
         query:      str,
-        doc_ids:    list[str] = [],
+        doc_ids:    list[str] | None = None,
     ) -> None:
         """Append *query* to the session's queries list and merge *doc_ids*."""
+        resolved_doc_ids = list(doc_ids or [])
         with self._engine.begin() as conn:
             row = conn.execute(
                 select(research_sessions_table).where(
@@ -595,7 +597,7 @@ class MemoryStore:
             # Append query (allow duplicates — preserves chronological order)
             updated_queries = existing_queries + [query]
             # Merge doc_ids: deduplicate while preserving order
-            updated_docs = list(dict.fromkeys(existing_docs + doc_ids))
+            updated_docs = list(dict.fromkeys(existing_docs + resolved_doc_ids))
 
             conn.execute(
                 research_sessions_table.update()
@@ -630,16 +632,17 @@ class MemoryStore:
         note_id:        str,
         session_id:     str,
         content:        str,
-        source_doc_ids: list[str] = [],
+        source_doc_ids: list[str] | None = None,
     ) -> None:
         """Insert a note attached to *session_id*."""
+        resolved_source_doc_ids = list(source_doc_ids or [])
         with self._engine.begin() as conn:
             conn.execute(
                 research_notes_table.insert().values(
                     note_id=note_id,
                     session_id=session_id,
                     content=content,
-                    source_doc_ids=json.dumps(source_doc_ids),
+                    source_doc_ids=json.dumps(resolved_source_doc_ids),
                     created_at=_utcnow(),
                 )
             )

@@ -153,7 +153,7 @@ class ResearchSessionManager:
     def create(
         self,
         name: str,
-        tags: list[str] = [],
+        tags: list[str] | None = None,
     ) -> ResearchSession:
         """Create and persist a new research session.
 
@@ -161,7 +161,7 @@ class ResearchSessionManager:
         Does NOT automatically set this as the active session.
         """
         sid = str(uuid.uuid4())
-        self._store.create_research_session(sid, name, tags=list(tags))
+        self._store.create_research_session(sid, name, tags=list(tags or []))
         log.info("ResearchSessionManager: created session %r (%s)", name, sid)
         return self.get(sid)  # type: ignore[return-value]
 
@@ -205,7 +205,7 @@ class ResearchSessionManager:
     # Query tracking (called automatically via on_turn hook)
     # ------------------------------------------------------------------
 
-    def on_turn(self, query: str, doc_ids: list[str] = []) -> None:
+    def on_turn(self, query: str, doc_ids: list[str] | None = None) -> None:
         """Record a Q-A turn into the *active* session (no-op if none is set).
 
         Called by ``ConversationMemory.add_turn()`` when a research session
@@ -214,7 +214,7 @@ class ResearchSessionManager:
         if self._active_id is None:
             return
         self._store.add_query_to_research_session(
-            self._active_id, query, doc_ids=list(doc_ids)
+            self._active_id, query, doc_ids=list(doc_ids or [])
         )
 
     # ------------------------------------------------------------------
@@ -225,7 +225,7 @@ class ResearchSessionManager:
         self,
         content:        str,
         session_id:     str | None  = None,
-        source_doc_ids: list[str]   = [],
+        source_doc_ids: list[str] | None = None,
     ) -> ResearchNote:
         """Add a note to *session_id* (or the active session if None).
 
@@ -249,13 +249,13 @@ class ResearchSessionManager:
             note_id=note_id,
             session_id=sid,
             content=content,
-            source_doc_ids=list(source_doc_ids),
+            source_doc_ids=list(source_doc_ids or []),
         )
         return ResearchNote(
             note_id=note_id,
             session_id=sid,
             content=content,
-            source_doc_ids=list(source_doc_ids),
+            source_doc_ids=list(source_doc_ids or []),
         )
 
     def get_notes(self, session_id: str | None = None) -> list[ResearchNote]:
