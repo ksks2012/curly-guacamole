@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from langchain_chroma import Chroma
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -101,6 +102,48 @@ class MemoryComponents:
     timeline: KnowledgeTimeline
     research: ResearchSessionManager
     memory: ConversationMemory
+
+
+@dataclass
+class ClientComponentProviders:
+    """Composable provider set used by build_client_components.
+
+    Replacing one provider allows backend/pipeline swaps without editing the
+    central assembly flow.
+    """
+
+    code_result_filter_factory: Callable[[], CodeResultFilter]
+    model_builder: Callable[[AppConfig], ModelComponents]
+    storage_builder: Callable[[AppConfig, object], StorageComponents]
+    retrieval_builder: Callable[[AppConfig, object, ChatOpenAI, Chroma], RetrievalComponents]
+    knowledge_builder: Callable[[ChatOpenAI, Chroma, Chroma, Indexer], KnowledgeComponents]
+    memory_builder: Callable[[AppConfig, ChatOpenAI, MemoryStore], MemoryComponents]
+
+
+def default_client_component_providers() -> ClientComponentProviders:
+    """Return the default provider composition used in production."""
+    return ClientComponentProviders(
+        code_result_filter_factory=CodeResultFilter,
+        model_builder=build_model_components,
+        storage_builder=lambda config, embed: build_storage_components(config, embed=embed),
+        retrieval_builder=lambda config, embed, llm, db: build_retrieval_components(
+            config,
+            embed=embed,
+            llm=llm,
+            db=db,
+        ),
+        knowledge_builder=lambda llm, db, qa_db, qa_indexer: build_knowledge_components(
+            llm=llm,
+            db=db,
+            qa_db=qa_db,
+            qa_indexer=qa_indexer,
+        ),
+        memory_builder=lambda config, llm, mem_store: build_memory_components(
+            config,
+            llm=llm,
+            mem_store=mem_store,
+        ),
+    )
 
 
 def build_model_components(config: AppConfig) -> ModelComponents:
@@ -262,28 +305,28 @@ def build_memory_components(
     )
 
 
-def build_client_components(config: AppConfig) -> ClientComponents:
-    """Build all subsystems used by LocalLlamaClient through layered factories."""
-    code_result_filter = CodeResultFilter()
-    models = build_model_components(config)
-    storage = build_storage_components(config, embed=models.embed)
-    retrieval = build_retrieval_components(
-        config,
-        embed=models.embed,
-        llm=models.llm,
-        db=storage.db,
+def build_client_components(
+    config: AppConfig,
+    *,
+    providers: ClientComponentProviders | None = None,
+) -> ClientComponents:
+    """Build all subsystems used by LocalLlamaClient through layered factories.
+
+    A custom provider set enables backend and pipeline replacement without
+    changing this assembly function.
+    """
+    provider_set = providers or default_client_component_providers()
+    code_result_filter = provider_set.code_result_filter_factory()
+    models = provider_set.model_builder(config)
+    storage = provider_set.storage_builder(config, models.embed)
+    retrieval = provider_set.retrieval_builder(config, models.embed, models.llm, storage.db)
+    knowledge = provider_set.knowledge_builder(
+        models.llm,
+        storage.db,
+        storage.qa_db,
+        storage.qa_indexer,
     )
-    knowledge = build_knowledge_components(
-        llm=models.llm,
-        db=storage.db,
-        qa_db=storage.qa_db,
-        qa_indexer=storage.qa_indexer,
-    )
-    memory = build_memory_components(
-        config,
-        llm=models.llm,
-        mem_store=storage.mem_store,
-    )
+    memory = provider_set.memory_builder(config, models.llm, storage.mem_store)
     retrieval.engine.memory = memory.memory
 
     return ClientComponents(

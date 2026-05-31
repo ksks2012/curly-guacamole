@@ -141,3 +141,50 @@ def test_build_client_components_wires_layer_outputs(monkeypatch):
     assert built.memory_manager == "memory_manager"
     assert built.memory == "memory"
     assert engine.memory == "memory"
+
+
+def test_build_client_components_accepts_custom_providers():
+    config = _make_config()
+    engine = SimpleNamespace(memory=None)
+    custom_filter = SimpleNamespace(name="custom-filter")
+
+    providers = mod.ClientComponentProviders(
+        code_result_filter_factory=lambda: custom_filter,
+        model_builder=lambda _cfg: mod.ModelComponents(embed="embed-x", llm="llm-x"),
+        storage_builder=lambda _cfg, _embed: mod.StorageComponents(
+            db="db-x",
+            qa_db="qa-db-x",
+            indexer="indexer-x",
+            qa_indexer="qa-indexer-x",
+            mem_store="mem-store-x",
+        ),
+        retrieval_builder=lambda _cfg, _embed, _llm, _db: mod.RetrievalComponents(
+            ingester="ingester-x",
+            reranker="reranker-x",
+            searcher="searcher-x",
+            doc_retriever="doc-retriever-x",
+            doc_pipeline="doc-pipeline-x",
+            engine=engine,
+        ),
+        knowledge_builder=lambda _llm, _db, _qa_db, _qa_indexer: mod.KnowledgeComponents(
+            knowledge="knowledge-x"
+        ),
+        memory_builder=lambda _cfg, _llm, _mem_store: mod.MemoryComponents(
+            memory_manager="memory-manager-x",
+            user_memory="user-memory-x",
+            timeline="timeline-x",
+            research="research-x",
+            memory="memory-x",
+        ),
+    )
+
+    built = mod.build_client_components(config, providers=providers)
+
+    assert built.code_result_filter is custom_filter
+    assert built.embed == "embed-x"
+    assert built.db == "db-x"
+    assert built.engine is engine
+    assert built.knowledge == "knowledge-x"
+    assert built.memory_manager == "memory-manager-x"
+    assert built.memory == "memory-x"
+    assert engine.memory == "memory-x"
