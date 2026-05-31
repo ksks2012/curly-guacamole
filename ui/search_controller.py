@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 from langchain_core.documents import Document
 
+from ui.client_protocols import SearchClientProtocol
 from utils.logger import AppLogger
-from rag.client import LocalLlamaClient
 from rag.retrieval.filters import SearchFilter
 
 
@@ -44,7 +44,7 @@ class SearchController:
     properties and triggers mutations through action methods.
     """
 
-    def __init__(self, client: LocalLlamaClient) -> None:
+    def __init__(self, client: SearchClientProtocol) -> None:
         self._client = client
         self._vector: list[tuple[Document, float]] = []
         self._reranked: list[tuple[Document, float]] | None = None
