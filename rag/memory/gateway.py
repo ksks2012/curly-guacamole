@@ -3,7 +3,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
+
+
+MemoryScope = Literal["conversation", "user_profile", "timeline", "research"]
+
+
+@dataclass(frozen=True)
+class StoreCommand:
+    """Typed store command used by MemoryGateway.store_typed."""
+
+    scope: MemoryScope
+    key: str
+    value: object
+
+
+@dataclass(frozen=True)
+class RetrieveQuery:
+    """Typed retrieve query used by MemoryGateway.retrieve_typed."""
+
+    scope: MemoryScope
+    key: str
+
+
+@dataclass(frozen=True)
+class ClearCommand:
+    """Typed clear command used by MemoryGateway.clear_typed."""
+
+    scope: MemoryScope
 
 
 @runtime_checkable
@@ -172,26 +199,52 @@ class MemoryGateway:
     timeline: TimelineMemory
     research: ResearchContextMemory
 
+    # ------------------------------------------------------------------
+    # Typed API (preferred)
+    # ------------------------------------------------------------------
+
+    def store_typed(self, command: StoreCommand) -> object | None:
+        return self._resolve_scope(command.scope).store(command.key, command.value)
+
+    def retrieve_typed(self, query: RetrieveQuery) -> object:
+        return self._resolve_scope(query.scope).retrieve(query.key)
+
+    def clear_typed(self, command: ClearCommand) -> None:
+        self._resolve_scope(command.scope).clear()
+
+    # ------------------------------------------------------------------
+    # Legacy API (kept for backward compatibility)
+    # ------------------------------------------------------------------
+
     def store(self, scope: str, key: str, value: object) -> object | None:
-        return self._resolve_scope(scope).store(key, value)
+        return self.store_typed(StoreCommand(scope=self._normalize_scope(scope), key=key, value=value))
 
     def retrieve(self, scope: str, key: str) -> object:
-        return self._resolve_scope(scope).retrieve(key)
+        return self.retrieve_typed(RetrieveQuery(scope=self._normalize_scope(scope), key=key))
 
     def clear(self, scope: str) -> None:
-        self._resolve_scope(scope).clear()
+        self.clear_typed(ClearCommand(scope=self._normalize_scope(scope)))
 
-    def _resolve_scope(self, scope: str) -> IMemoryManager:
+    @staticmethod
+    def _normalize_scope(scope: str) -> MemoryScope:
+        if scope == "conversation":
+            return "conversation"
+        if scope == "user_profile":
+            return "user_profile"
+        if scope == "timeline":
+            return "timeline"
+        if scope == "research":
+            return "research"
+        raise KeyError(f"Unknown memory scope: {scope}")
+
+    def _resolve_scope(self, scope: MemoryScope) -> IMemoryManager:
         mapping = {
             "conversation": self.conversation,
             "user_profile": self.user_profile,
             "timeline": self.timeline,
             "research": self.research,
         }
-        try:
-            return mapping[scope]
-        except KeyError as exc:
-            raise KeyError(f"Unknown memory scope: {scope}") from exc
+        return mapping[scope]
 
 
 def build_memory_gateway(

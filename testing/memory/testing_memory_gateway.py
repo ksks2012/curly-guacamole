@@ -1,6 +1,11 @@
 from types import SimpleNamespace
 
-from rag.memory.gateway import build_memory_gateway
+from rag.memory.gateway import (
+    ClearCommand,
+    RetrieveQuery,
+    StoreCommand,
+    build_memory_gateway,
+)
 
 
 class _FakeConversationMemory:
@@ -190,3 +195,36 @@ def test_memory_gateway_clear_timeline_scope_is_supported():
 
     assert timeline.clear_called is True
     assert timeline.activities == []
+
+
+def test_memory_gateway_typed_api_routes_commands() -> None:
+    gateway = build_memory_gateway(
+        memory=_FakeConversationMemory(),
+        user_memory=_FakeUserMemory(),
+        timeline=_FakeTimeline(),
+        research=_FakeResearch(),
+    )
+
+    gateway.store_typed(StoreCommand(scope="conversation", key="active_project", value="Typed API"))
+    active_project = gateway.retrieve_typed(
+        RetrieveQuery(scope="conversation", key="active_project")
+    )
+
+    assert active_project == "Typed API"
+
+
+def test_memory_gateway_legacy_api_remains_backward_compatible() -> None:
+    gateway = build_memory_gateway(
+        memory=_FakeConversationMemory(),
+        user_memory=_FakeUserMemory(),
+        timeline=_FakeTimeline(),
+        research=_FakeResearch(),
+    )
+
+    gateway.store("user_profile", "topics", ["legacy"])  # legacy entrypoint
+    topics = [item["topic"] for item in gateway.retrieve("user_profile", "top_interests")]
+
+    assert topics == ["legacy"]
+
+    gateway.clear_typed(ClearCommand(scope="conversation"))
+    assert gateway.conversation.memory.cleared is True
