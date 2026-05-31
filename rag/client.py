@@ -3,6 +3,12 @@ import os
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
+from rag.client_capabilities import (
+    GenerationCapability,
+    IndexingCapability,
+    KnowledgeCapability,
+    RetrievalCapability,
+)
 from rag.client_components import build_client_components
 from utils.config import AppConfig
 from utils.file_processor import load_and_chunk_pdf, write_json
@@ -101,6 +107,27 @@ class LocalLlamaClient:
             code_result_filter=self._code_result_filter,
         )
 
+        # Capability APIs keep responsibilities separated while this class
+        # stays as a compatibility facade for existing call sites.
+        self.retrieval_api = RetrievalCapability(
+            db=self.db,
+            searcher=self.searcher,
+            code_retrieval=self._code_retrieval,
+        )
+        self.knowledge_api = KnowledgeCapability(knowledge=self.knowledge)
+        self.generation_api = GenerationCapability(
+            engine=self.engine,
+            unified_pipeline_provider=lambda: self.unified_pipeline,
+        )
+        self.indexing_api = IndexingCapability(
+            db=self.db,
+            embed=self.embed,
+            persist_directory=self.persist_directory,
+            ingester=self.ingester,
+            indexer=self.indexer,
+            knowledge=self.knowledge,
+        )
+
         log.info("LocalLlamaClient ready")
 
     # ------------------------------------------------------------------
@@ -171,13 +198,10 @@ class LocalLlamaClient:
 
     def get_retriever(self, k: int = 5, fetch_k: int = 20, doc_id: str | None = None):
         """Returns an MMR retriever scoped to *doc_id* when supplied."""
-        search_kwargs: dict = {"k": k, "fetch_k": fetch_k}
-        if doc_id is not None:
-            search_kwargs["filter"] = {"doc_id": doc_id}
-        return self.db.as_retriever(search_type="mmr", search_kwargs=search_kwargs)
+        return self.retrieval_api.get_retriever(k=k, fetch_k=fetch_k, doc_id=doc_id)
 
     def similarity_search(self, query: str, k: int = 4, doc_id: str | None = None):
-        return self.searcher.similarity_search(query, k=k, doc_id=doc_id)
+        return self.retrieval_api.similarity_search(query, k=k, doc_id=doc_id)
 
     def similarity_search_with_scores(
         self,
@@ -186,27 +210,27 @@ class LocalLlamaClient:
         doc_id: str | None = None,
         search_filter: "SearchFilter | None" = None,
     ) -> list[tuple[Document, float]]:
-        return self.searcher.similarity_search_with_scores(
+        return self.retrieval_api.similarity_search_with_scores(
             query, k=k, doc_id=doc_id, search_filter=search_filter
         )
 
     def list_doc_ids(self) -> list[str]:
-        return self.searcher.list_doc_ids()
+        return self.retrieval_api.list_doc_ids()
 
     def list_doc_title_map(self) -> dict[str, str]:
-        return self.searcher.list_doc_title_map()
+        return self.retrieval_api.list_doc_title_map()
 
     def list_field_values(self, field: str) -> list[str]:
-        return self.searcher.list_field_values(field)
+        return self.retrieval_api.list_field_values(field)
 
     def list_workspaces(self) -> list[str]:
-        return self.searcher.list_workspaces()
+        return self.retrieval_api.list_workspaces()
 
     def list_document_types(self) -> list[str]:
-        return self.searcher.list_document_types()
+        return self.retrieval_api.list_document_types()
 
     def list_tags(self) -> list[str]:
-        return self.searcher.list_tags()
+        return self.retrieval_api.list_tags()
 
     def browse_chunks(
         self,
@@ -215,7 +239,12 @@ class LocalLlamaClient:
         topic: str | None = None,
         limit: int = 500,
     ) -> list[dict]:
-        return self.searcher.browse_chunks(doc_id=doc_id, tag=tag, topic=topic, limit=limit)
+        return self.retrieval_api.browse_chunks(
+            doc_id=doc_id,
+            tag=tag,
+            topic=topic,
+            limit=limit,
+        )
 
     def browse_code_blocks(
         self,
@@ -270,7 +299,7 @@ class LocalLlamaClient:
         return _DEFAULT_CODE_RESULT_FILTER.is_test_metadata(meta)
 
     def _code_block_persist_dirs(self) -> list[str]:
-        return self._code_retrieval.code_block_persist_dirs()
+        return self.retrieval_api.code_block_persist_dirs()
 
     def _enrich_code_results_with_relations(
         self,
@@ -278,13 +307,13 @@ class LocalLlamaClient:
         query: str,
         rows: list[tuple[Document, float]],
     ) -> list[tuple[Document, float]]:
-        return self._code_retrieval.enrich_code_results_with_relations(query=query, rows=rows)
+        return self.retrieval_api.enrich_code_results_with_relations(query=query, rows=rows)
 
     def rebuild_bm25(self) -> None:
-        self.searcher.rebuild_bm25()
+        self.retrieval_api.rebuild_bm25()
 
     def invalidate_bm25(self) -> None:
-        self.searcher.invalidate_bm25()
+        self.retrieval_api.invalidate_bm25()
 
     def hybrid_search_with_scores(
         self,
@@ -293,7 +322,7 @@ class LocalLlamaClient:
         fetch_k: int = 20,
         search_filter: "SearchFilter | None" = None,
     ) -> tuple:
-        return self.searcher.hybrid_search_with_scores(
+        return self.retrieval_api.hybrid_search_with_scores(
             query, k=k, fetch_k=fetch_k, search_filter=search_filter
         )
 
@@ -307,7 +336,7 @@ class LocalLlamaClient:
         use_hybrid: bool = False,
         search_filter: "SearchFilter | None" = None,
     ) -> dict:
-        return self.searcher.search_for_debug(
+        return self.retrieval_api.search_for_debug(
             query, k=k, fetch_k=fetch_k, doc_id=doc_id,
             use_rerank=use_rerank, use_hybrid=use_hybrid,
             search_filter=search_filter,
@@ -323,7 +352,7 @@ class LocalLlamaClient:
         use_hybrid: bool = False,
         search_filter: "SearchFilter | None" = None,
     ) -> dict:
-        return self.searcher.search_for_trace(
+        return self.retrieval_api.search_for_trace(
             query, k=k, fetch_k=fetch_k, doc_id=doc_id,
             use_rerank=use_rerank, use_hybrid=use_hybrid,
             search_filter=search_filter,
@@ -334,16 +363,16 @@ class LocalLlamaClient:
     # ------------------------------------------------------------------
 
     def enrich_doc(self, doc_id: str, overwrite: bool = False) -> dict:
-        return self.knowledge.enrich_doc(doc_id, overwrite=overwrite)
+        return self.knowledge_api.enrich_doc(doc_id, overwrite=overwrite)
 
     def generate_qa(self, doc_id: str, overwrite: bool = False) -> dict:
-        return self.knowledge.generate_qa(doc_id, overwrite=overwrite)
+        return self.knowledge_api.generate_qa(doc_id, overwrite=overwrite)
 
     def qa_search(self, query: str, k: int = 5) -> list[dict]:
-        return self.knowledge.qa_search(query, k=k)
+        return self.knowledge_api.qa_search(query, k=k)
 
     def cluster_topics(self, n_clusters: int = 8, doc_id: str | None = None):
-        return self.knowledge.cluster_topics(n_clusters=n_clusters, doc_id=doc_id)
+        return self.knowledge_api.cluster_topics(n_clusters=n_clusters, doc_id=doc_id)
 
     def link_chunks(
         self,
@@ -351,16 +380,16 @@ class LocalLlamaClient:
         threshold: float = 0.75,
         doc_id: str | None = None,
     ):
-        return self.knowledge.link_chunks(top_k=top_k, threshold=threshold, doc_id=doc_id)
+        return self.knowledge_api.link_chunks(top_k=top_k, threshold=threshold, doc_id=doc_id)
 
     def link_pages(self, top_k: int = 5, threshold: float = 0.70):
-        return self.knowledge.link_pages(top_k=top_k, threshold=threshold)
+        return self.knowledge_api.link_pages(top_k=top_k, threshold=threshold)
 
     def get_related_chunks(self, chunk_id: str) -> list[dict]:
-        return self.knowledge.get_related_chunks(chunk_id)
+        return self.knowledge_api.get_related_chunks(chunk_id)
 
     def get_related_pages(self, doc_id: str) -> list[dict]:
-        return self.knowledge.get_related_pages(doc_id)
+        return self.knowledge_api.get_related_pages(doc_id)
 
     # ------------------------------------------------------------------
     # Generation
@@ -375,8 +404,12 @@ class LocalLlamaClient:
         expand_query: bool | None = None,
     ):
         """Answer using the document retrieval pipeline (default)."""
-        return self.engine.answer(
-            query, k=k, fetch_k=fetch_k, doc_id=doc_id, expand_query=expand_query
+        return self.generation_api.answer_query(
+            query,
+            k=k,
+            fetch_k=fetch_k,
+            doc_id=doc_id,
+            expand_query=expand_query,
         )
 
     def answer_unified(
@@ -393,28 +426,20 @@ class LocalLlamaClient:
         unified pipeline spans multiple backends.  Use the *filters* parameter
         to pass a raw Chroma where-dict for document-side filtering.
         """
-        prev = self.engine.retriever
-        self.engine.retriever = self.unified_pipeline
-        self.engine._pipeline = None   # clear auto-built pipeline cache
-        try:
-            return self.engine.answer(
-                query, k=k, fetch_k=fetch_k, expand_query=expand_query,
-                filters=filters,
-            )
-        finally:
-            self.engine.retriever = prev
-            self.engine._pipeline = None
+        return self.generation_api.answer_unified(
+            query,
+            k=k,
+            fetch_k=fetch_k,
+            expand_query=expand_query,
+            filters=filters,
+        )
 
     # ------------------------------------------------------------------
     # Indexing
     # ------------------------------------------------------------------
 
     def add_texts(self, texts, metadatas=None, ids=None):
-        if hasattr(self.db, "add_texts"):
-            return self.db.add_texts(texts, metadatas=metadatas, ids=ids)
-        self.db = Chroma.from_texts(
-            texts, embedding=self.embed, persist_directory=self.persist_directory
-        )
+        return self.indexing_api.add_texts(texts, metadatas=metadatas, ids=ids)
 
     def add_document(
         self,
@@ -426,14 +451,17 @@ class LocalLlamaClient:
     ) -> dict:
         """Ingest a document file, optionally running knowledge extraction before indexing."""
         try:
-            chunks = self.ingester.ingest(
-                path, doc_id=doc_id, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+            chunks = self.indexing_api.ingester.ingest(
+                path,
+                doc_id=doc_id,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
             )
             log.info("add_document: %s  %d chunks  doc_id=%r  extract_knowledge=%s",
                      path, len(chunks), doc_id, extract_knowledge)
             if extract_knowledge:
-                chunks = self.knowledge.extractor.enrich(chunks)
-            return self.indexer.run(chunks)
+                chunks = self.indexing_api.knowledge.extractor.enrich(chunks)
+            return self.indexing_api.indexer.run(chunks)
         except Exception as e:
             log.error("add_document failed: %s", e, exc_info=True)
             raise
