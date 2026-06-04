@@ -61,7 +61,14 @@ class OpenRouterEmbeddings(Embeddings):
             self._max_workers = 4
 
     def _post_batch(self, texts: List[str]) -> List[List[float]]:
-        """Acquire a rate-limit slot then POST one embedding batch."""
+        """Acquire a rate-limit slot then POST one embedding batch.
+        
+        Note: empty or whitespace-only strings are replaced with a single space
+        to avoid API validation errors.
+        """
+        # Replace empty/whitespace-only strings with a single space (API requirement)
+        texts = [t if t.strip() else " " for t in texts]
+        
         self._limiter.acquire()
         headers = {"Authorization": f"Bearer {self.api_key}"}
         with httpx.Client() as client:
@@ -71,7 +78,12 @@ class OpenRouterEmbeddings(Embeddings):
                 json={"model": self.model, "input": texts},
             )
             response.raise_for_status()
-            return [item["embedding"] for item in response.json()["data"]]
+            body = response.json()
+            if "data" not in body:
+                raise ValueError(
+                    f"Unexpected embedding API response (missing 'data'): {body}"
+                )
+            return [item["embedding"] for item in body["data"]]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         if not texts:

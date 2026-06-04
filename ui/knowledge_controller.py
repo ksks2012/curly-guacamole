@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ui.client_protocols import KnowledgeClientProtocol
 from utils.logger import AppLogger
-from rag.client import LocalLlamaClient
 from rag.knowledge.clusterer import TopicMap  # noqa: F401 (type hint only)
 
 log = AppLogger.get(__name__)
@@ -63,7 +63,7 @@ class KnowledgeFilter:
 class KnowledgeController:
     """Bridges Chroma chunk browsing and the Knowledge Card display layer."""
 
-    def __init__(self, client: LocalLlamaClient) -> None:
+    def __init__(self, client: KnowledgeClientProtocol) -> None:
         self._client = client
         self._all_chunks: list[dict] = []
         self._filter = KnowledgeFilter()

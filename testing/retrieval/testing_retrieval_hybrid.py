@@ -2,7 +2,7 @@
 Smoke test for Phase 1 — Unified Retrieval Architecture.
 
 These tests run entirely with mock retrievers so they do NOT require a
-running embedding server or Chroma database.  They verify:
+running embedding server or Chroma database. They verify:
 
 - RetrievalResult dataclass and unique_key deduplication logic
 - BaseRetriever Protocol conformance (runtime isinstance check)
@@ -12,10 +12,7 @@ running embedding server or Chroma database.  They verify:
 - Edge cases: empty retrievers, single retriever, duplicate items
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from __future__ import annotations
 
 from rag.retrieval.base import BaseRetriever, RetrievalResult
 from rag.retrieval.hybrid_retriever import HybridRetriever, _rrf_merge
@@ -28,9 +25,11 @@ from rag.retrieval.hybrid_retriever import HybridRetriever, _rrf_merge
 class _MockRetriever:
     """Returns a fixed list of RetrievalResult objects."""
 
-    def __init__(self, results: list[RetrievalResult], name: str = "mock") -> None:
+    def __init__(
+        self, results: list[RetrievalResult], name: str = "mock"
+    ) -> None:
         self._results = results
-        self.name     = name
+        self.name = name
 
     def search(
         self,
@@ -79,8 +78,6 @@ def test_retrieval_result_unique_key() -> None:
     r4 = RetrievalResult(content="bare content", score=0.9, source="code")
     assert r3.unique_key() == r4.unique_key()
 
-    print("test_retrieval_result_unique_key: OK")
-
 
 # ---------------------------------------------------------------------------
 # Tests: BaseRetriever Protocol conformance
@@ -88,14 +85,14 @@ def test_retrieval_result_unique_key() -> None:
 
 def test_protocol_conformance() -> None:
     mock = _MockRetriever([])
-    assert isinstance(mock, BaseRetriever), \
-        "MockRetriever should satisfy BaseRetriever Protocol"
+    assert isinstance(
+        mock, BaseRetriever
+    ), "MockRetriever should satisfy BaseRetriever Protocol"
 
     hybrid = HybridRetriever([mock])
-    assert isinstance(hybrid, BaseRetriever), \
-        "HybridRetriever should satisfy BaseRetriever Protocol"
-
-    print("test_protocol_conformance: OK")
+    assert isinstance(
+        hybrid, BaseRetriever
+    ), "HybridRetriever should satisfy BaseRetriever Protocol"
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +102,8 @@ def test_protocol_conformance() -> None:
 def test_hybrid_basic_merge() -> None:
     """Items from multiple retrievers should be fused and sorted by RRF score."""
     doc_results = [
-        _make_doc_result("d1", "document one",   score=0.9),
-        _make_doc_result("d2", "document two",   score=0.8),
+        _make_doc_result("d1", "document one", score=0.9),
+        _make_doc_result("d2", "document two", score=0.8),
         _make_doc_result("d3", "document three", score=0.7),
     ]
     code_results = [
@@ -114,10 +111,10 @@ def test_hybrid_basic_merge() -> None:
         _make_code_result("c2", "code snippet two", score=0.85),
     ]
 
-    ret_doc  = _MockRetriever(doc_results,  name="doc")
+    ret_doc = _MockRetriever(doc_results, name="doc")
     ret_code = _MockRetriever(code_results, name="code")
 
-    hybrid  = HybridRetriever([ret_doc, ret_code])
+    hybrid = HybridRetriever([ret_doc, ret_code])
     results = hybrid.search("test query", top_k=4)
 
     assert len(results) == 4, f"expected 4 results, got {len(results)}"
@@ -128,9 +125,6 @@ def test_hybrid_basic_merge() -> None:
     for i in range(len(results) - 1):
         assert results[i].score >= results[i + 1].score, \
             f"out-of-order scores: {[r.score for r in results]}"
-
-    print(f"test_hybrid_basic_merge: OK  ({len(results)} results, "
-          f"scores={[r.score for r in results]})")
 
 
 def test_hybrid_deduplication() -> None:
@@ -150,16 +144,14 @@ def test_hybrid_deduplication() -> None:
     ret1 = _MockRetriever([shared, only_in_doc])
     ret2 = _MockRetriever([shared_as_code, only_in_code])
 
-    hybrid  = HybridRetriever([ret1, ret2])
+    hybrid = HybridRetriever([ret1, ret2])
     results = hybrid.search("test", top_k=10)
 
     keys = [r.unique_key() for r in results]
     assert len(keys) == len(set(keys)), f"duplicate keys in results: {keys}"
     assert "shared-1" in keys, "shared item should appear once"
-    assert "only-doc"  in keys
+    assert "only-doc" in keys
     assert "only-code" in keys
-
-    print(f"test_hybrid_deduplication: OK  (keys={keys})")
 
 
 def test_hybrid_weighted_retrievers() -> None:
@@ -173,7 +165,7 @@ def test_hybrid_weighted_retrievers() -> None:
         name="low",
     )
     # Give high-weight retriever 3× more weight
-    hybrid  = HybridRetriever([high, low], weights=[3.0, 1.0])
+    hybrid = HybridRetriever([high, low], weights=[3.0, 1.0])
     results = hybrid.search("test", top_k=2)
 
     assert len(results) == 2
@@ -181,36 +173,33 @@ def test_hybrid_weighted_retrievers() -> None:
     assert results[0].unique_key() == "h1", \
         f"expected h1 first, got {results[0].unique_key()!r}"
 
-    print(f"test_hybrid_weighted_retrievers: OK  (top={results[0].unique_key()!r})")
-
 
 def test_hybrid_single_retriever() -> None:
     """HybridRetriever with a single retriever should behave like that retriever."""
-    results_in = [_make_doc_result(f"d{i}", f"content {i}", score=float(i)) for i in range(5)]
+    results_in = [
+        _make_doc_result(f"d{i}", f"content {i}", score=float(i)) for i in range(5)
+    ]
     ret = _MockRetriever(results_in)
     hybrid = HybridRetriever([ret])
     out = hybrid.search("q", top_k=3)
     assert len(out) == 3
-    print("test_hybrid_single_retriever: OK")
 
 
 def test_hybrid_empty_sub_retriever() -> None:
     """If one sub-retriever returns nothing, results still come from the other."""
-    empty    = _MockRetriever([])
+    empty = _MockRetriever([])
     nonempty = _MockRetriever([_make_doc_result("x1", "exists")])
-    hybrid   = HybridRetriever([empty, nonempty])
-    out      = hybrid.search("q", top_k=5)
+    hybrid = HybridRetriever([empty, nonempty])
+    out = hybrid.search("q", top_k=5)
     assert len(out) == 1
     assert out[0].unique_key() == "x1"
-    print("test_hybrid_empty_sub_retriever: OK")
 
 
 def test_hybrid_no_results() -> None:
     """All empty sub-retrievers → empty result list."""
     hybrid = HybridRetriever([_MockRetriever([]), _MockRetriever([])])
-    out    = hybrid.search("q", top_k=5)
+    out = hybrid.search("q", top_k=5)
     assert out == []
-    print("test_hybrid_no_results: OK")
 
 
 def test_rrf_merge_scores() -> None:
@@ -224,37 +213,12 @@ def test_rrf_merge_scores() -> None:
     expected = round(2 / 61, 6)
     assert abs(fused[0].score - expected) < 1e-5, \
         f"RRF score {fused[0].score} != expected {expected}"
-    print(f"test_rrf_merge_scores: OK  (score={fused[0].score}, expected≈{expected})")
 
 
 def test_hybrid_summary() -> None:
     ret1 = _MockRetriever([])
     ret2 = _MockRetriever([])
-    h    = HybridRetriever([ret1, ret2], weights=[0.7, 0.3])
-    s    = h.summary()
+    h = HybridRetriever([ret1, ret2], weights=[0.7, 0.3])
+    s = h.summary()
     assert "_MockRetriever" in s
     assert "0.7" in s
-    print(f"test_hybrid_summary: OK  ({s})")
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main() -> None:
-    test_retrieval_result_unique_key()
-    test_protocol_conformance()
-    test_hybrid_basic_merge()
-    test_hybrid_deduplication()
-    test_hybrid_weighted_retrievers()
-    test_hybrid_single_retriever()
-    test_hybrid_empty_sub_retriever()
-    test_hybrid_no_results()
-    test_rrf_merge_scores()
-    test_hybrid_summary()
-
-    print("\nPASS")
-
-
-if __name__ == "__main__":
-    main()

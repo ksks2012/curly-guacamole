@@ -23,6 +23,7 @@ from rag.code.schema import (
     CommitInfo, FileSnapshot,
 )
 from rag.code.scanner import RepoScanner
+from rag.code.path_rules import is_test_path, normalize_rel_path
 from rag.code.ast_parser import PythonASTParser
 from rag.code.symbol_store import SymbolStore
 from rag.code.indexer import CodeIndexer
@@ -30,6 +31,13 @@ from rag.code.repo_index import RepoIndex
 from rag.code.knowledge_base import CodeKnowledgeBase
 from rag.code.git_reader import GitReader
 from rag.code.snapshot_store import SnapshotStore, SymbolDiff
+from rag.code.orchestration_service import (
+    CodeOrchestrationService,
+    OrchestrationResult,
+    ParseStats,
+    EdgeStats,
+)
+from rag.code.state_repository import CodeOrchestrationStateRepository
 
 __all__ = [
     # schema
@@ -43,6 +51,8 @@ __all__ = [
     "FileSnapshot",
     # modules
     "RepoScanner",
+    "is_test_path",
+    "normalize_rel_path",
     "PythonASTParser",
     "SymbolStore",
     "CodeIndexer",
@@ -51,4 +61,9 @@ __all__ = [
     "GitReader",
     "SnapshotStore",
     "SymbolDiff",
+    "CodeOrchestrationService",
+    "OrchestrationResult",
+    "ParseStats",
+    "EdgeStats",
+    "CodeOrchestrationStateRepository",
 ]

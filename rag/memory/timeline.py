@@ -56,7 +56,7 @@ class KnowledgeTimeline:
     def record_activity(
         self,
         topics:   list[str],
-        doc_ids:  list[str]   = [],
+        doc_ids:  list[str] | None = None,
         date_str: str | None  = None,
     ) -> None:
         """Record a Q-A turn's topics and referenced documents.
@@ -72,10 +72,11 @@ class KnowledgeTimeline:
         """
         if date_str is None:
             date_str = date.today().isoformat()
+        resolved_doc_ids = list(doc_ids or [])
 
         # Filter blanks
         clean_topics  = [t.strip() for t in topics  if t.strip()]
-        clean_doc_ids = [d.strip() for d in doc_ids if d.strip()]
+        clean_doc_ids = [d.strip() for d in resolved_doc_ids if d.strip()]
 
         if not clean_topics and not clean_doc_ids:
             return  # nothing to record
@@ -120,6 +121,11 @@ class KnowledgeTimeline:
             for topic in entry["topics"]:
                 freq[topic] = freq.get(topic, 0) + 1
         return dict(sorted(freq.items(), key=lambda kv: kv[1], reverse=True))
+    
+    def clear(self) -> None:
+        """Delete all timeline entries."""
+        self._store.clear_timeline()
+        log.info("KnowledgeTimeline: all entries cleared")
 
     # ------------------------------------------------------------------
     # Prompt integration

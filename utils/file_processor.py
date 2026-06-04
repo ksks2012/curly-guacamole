@@ -20,7 +20,8 @@ def read_yaml(filename: str) -> Mapping :
             data = yaml.safe_load(f)
     except Exception as e:
         print(e)
-    pprint.pprint(data)
+    # Suppress config logging during initialization (use for debugging if needed)
+    # pprint.pprint(data)
     return data
 
 def read_json(filename: str) -> Mapping :

@@ -170,7 +170,7 @@ class ConversationMemory:
         self,
         question: str,
         answer:   str,
-        doc_ids:  list[str] = [],
+        doc_ids:  list[str] | None = None,
     ) -> ConversationTurn:
         """Record a Q&A exchange, update topics, user profile, and timeline.
 
@@ -185,6 +185,7 @@ class ConversationMemory:
         The saved ConversationTurn (with ``id`` and ``seq`` assigned).
         """
         state = self._require_state()
+        resolved_doc_ids = list(doc_ids or [])
 
         # --- Extract topics ---
         topics: list[str] = []
@@ -230,14 +231,14 @@ class ConversationMemory:
         # --- C.3: record to knowledge timeline ---
         if self._timeline is not None:
             try:
-                self._timeline.record_activity(topics, doc_ids=list(doc_ids))
+                self._timeline.record_activity(topics, doc_ids=resolved_doc_ids)
             except Exception as exc:
                 log.warning("timeline.record_activity() failed: %s", exc)
 
         # --- C.4: update active research session ---
         if self._research is not None:
             try:
-                self._research.on_turn(question, doc_ids=list(doc_ids))
+                self._research.on_turn(question, doc_ids=resolved_doc_ids)
             except Exception as exc:
                 log.warning("research.on_turn() failed: %s", exc)
 

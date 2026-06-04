@@ -49,6 +49,12 @@ Designed to go from "just works" → **accurate + extensible + maintainable**.
 - **Knowledge timeline** (C.3) — daily activity log aggregating topics and retrieved document IDs per calendar day; enables queries like "what was I working on last week?"; injects a `Recent Activity` block into the prompt
 - **Research session tracking** (C.4) — named research sessions that group related queries, retrieved documents, and free-form notes; an *active session* auto-accumulates every Q-A turn; session context injected into the RAG prompt; supports archive/restore lifecycle
 
+### Architecture & Extensibility
+- **Composition-first client API** — `LocalLlamaClient` is assembled from `RetrievalCapability`, `KnowledgeCapability`, `GenerationCapability`, and `IndexingCapability`; legacy methods remain as compatibility wrappers
+- **Pluggable component providers** — `build_client_components(..., providers=...)` supports replacing model/storage/retrieval/knowledge/memory builders without editing central assembly code
+- **Typed memory gateway contracts** — `MemoryGateway` provides typed commands (`StoreCommand`, `RetrieveQuery`, `ClearCommand`) while preserving legacy `scope + key` APIs for compatibility
+- **UI protocol decoupling** — UI controllers now depend on narrow `Protocol` interfaces (`SearchClientProtocol`, `IndexClientProtocol`, `KnowledgeClientProtocol`) instead of directly depending on `LocalLlamaClient`
+
 ## Requirements
 
 - Python 3.10+
@@ -267,95 +273,51 @@ related_chunks = client.get_related_chunks("chroma-chunk-id")
 related_pages  = client.get_related_pages("my_doc")
 ```
 
-### Conversation Memory (Stage C.1)
+### Memory Gateway (Stage C.1 ~ C.4)
 
-Memory is automatically active — every `answer_query()` call injects the current session
-context into the prompt and records the turn afterward.
-
-```python
-# Override the active project label (also inferred automatically every 10 turns)
-client.set_active_project("Building Notion AI Knowledge System")
-
-# Inspect current session state
-state = client.get_memory_state()
-print(state.active_project)    # "Building Notion AI Knowledge System"
-print(state.current_topics)    # ["RAG Architecture", "Vector Search", ...]
-print(state.recent_questions)  # [ConversationTurn(...), ...]
-
-# Switch to a different named session (e.g., per user or per project)
-client.switch_memory_session("project-b")
-
-# List all sessions
-sessions = client.list_sessions()
-
-# Clear the current session's history
-client.clear_memory_session()
-```
-
-### Semantic User Memory (Stage C.2)
-
-Builds a long-term interest profile across all sessions using recency-weighted scoring.
-Automatically updated after every `answer_query()` turn.
+Memory is automatically injected during `answer_query()` through `RAGEngine`,
+and can also be managed via the unified gateway.
 
 ```python
-# Inspect the interest profile
-interests = client.get_user_interests(n=10)
-# [{"topic": "RAG Architecture", "count": 12, "weight": 8.34, ...}, ...]
+from rag.memory.gateway import ClearCommand, RetrieveQuery, StoreCommand
 
-profile = client.get_user_profile()
-print(profile.top_interests)      # top 20 weighted topics
-print(profile.total_topics_seen)  # distinct topic count
-```
+# C.1 conversation state
+client.memory_manager.store_typed(
+  StoreCommand(scope="conversation", key="active_project", value="Building Notion AI Knowledge System")
+)
+state = client.memory_manager.retrieve_typed(
+  RetrieveQuery(scope="conversation", key="state")
+)
+print(state.active_project)
+print(state.current_topics)
 
-### Knowledge Timeline (Stage C.3)
-
-Logs daily activity automatically. Useful for reviewing what was worked on over time.
-
-```python
-# Recent activity
-recent = client.get_timeline_recent(days=30)
-# [{"date": "2026-05-17", "topics": ["RAG", "Memory"], "question_count": 5}, ...]
-
-# Filter by month
-may = client.get_timeline_period(2026, month=5)
-
-# Yearly topic frequency map
-summary = client.get_yearly_summary(2026)
-# {"RAG Architecture": 34, "Vector Search": 18, ...}
-```
-
-### Research Session Tracking (Stage C.4)
-
-Group related queries, retrieved documents, and notes under a named research session.
-
-```python
-# Start a new research session (automatically becomes the active session)
-session = client.start_research_session("Agentic RAG research", tags=["RAG", "Agents"])
-
-# Every subsequent answer_query() call auto-records the query and doc_ids
-client.answer_query("What is the ReAct pattern?")
-client.answer_query("How does Reflexion differ from ReAct?")
-
-# Add a note (manually written or LLM-generated)
-client.add_research_note(
-    "ReAct alternates reasoning and acting; Reflexion adds self-evaluation.",
-    source_doc_ids=["doc-42"],
+# C.2 user profile
+client.memory_manager.store_typed(
+  StoreCommand(scope="user_profile", key="topics", value=["RAG", "Memory"])
+)
+interests = client.memory_manager.retrieve_typed(
+  RetrieveQuery(scope="user_profile", key="top_interests")
 )
 
-# Inspect the session
-session = client.get_research_session()
-print(session.queries)   # ["What is the ReAct pattern?", ...]
-print(session.doc_ids)   # all unique docs retrieved across the session
-notes = client.get_research_notes()
+# C.3 timeline
+client.memory_manager.store_typed(
+  StoreCommand(scope="timeline", key="activity", value={"topics": ["RAG"], "doc_ids": ["doc-1"]})
+)
+recent = client.memory_manager.retrieve_typed(
+  RetrieveQuery(scope="timeline", key="recent")
+)
 
-# List all active sessions
-all_sessions = client.list_research_sessions()
+# C.4 research sessions
+session = client.memory_manager.store_typed(
+  StoreCommand(scope="research", key="session", value={"name": "Agentic RAG research", "tags": ["RAG"]})
+)
+client.memory_manager.store_typed(
+  StoreCommand(scope="research", key="note", value={"content": "Investigate tool-augmented reasoning."})
+)
 
-# Archive when done
-client.archive_research_session()
-
-# Restore or browse archived sessions
-archived = client.list_research_sessions(archived=True)
+# Legacy API is still supported for compatibility.
+client.memory_manager.clear("conversation")
+client.memory_manager.clear_typed(ClearCommand(scope="timeline"))
 ```
 
 ## Project Structure
@@ -374,12 +336,15 @@ archived = client.list_research_sessions(archived=True)
 │   ├── search_controller.py      # Search tab logic (state, search, filter)
 │   ├── index_controller.py       # Index tab logic (save file, embed, list docs)
 │   ├── knowledge_controller.py   # Knowledge tab logic (enrich, QA, cluster, link)
+│   ├── client_protocols.py       # Narrow UI-facing client protocols (search/index/knowledge)
 │   ├── notion_controller.py      # Notion tab logic (sync, embed, search, RAG query)
 │   └── config_controller.py      # Config tab logic (load, save, hot-reload, schema)
 ├── etc/
 │   └── config.yaml               # All runtime settings
 ├── rag/
-│   ├── client.py                 # LocalLlamaClient — coordinates all RAG components
+│   ├── client.py                 # LocalLlamaClient — composition root + compatibility facade
+│   ├── client_capabilities.py    # Retrieval/Knowledge/Generation/Indexing capability facades
+│   ├── client_components.py      # Layered builders + pluggable provider assembly
 │   ├── engine.py                 # RAGEngine — query expansion, retrieval, rerank, generation, memory
 │   ├── indexer.py                # Indexer — SQLRecordManager lifecycle and document ingestion
 │   ├── embeddings.py             # OpenRouterEmbeddings (multi-threaded httpx) + OpenAI wrapper
@@ -412,6 +377,7 @@ archived = client.list_research_sessions(archived=True)
 │   │   └── manager.py            # KnowledgeManager — coordinates B.1–B.4 operations
 │   ├── memory/
 │   │   ├── models.py             # ConversationTurn, SessionState dataclasses (C.1)
+│   │   ├── gateway.py            # Unified memory gateway + typed command/query contracts
 │   │   ├── store.py              # MemoryStore — SQLite persistence for all memory subsystems (C.1–C.4)
 │   │   ├── manager.py            # ConversationMemory — session lifecycle, topic extraction, prompt injection (C.1)
 │   │   ├── user_memory.py        # UserMemoryManager — EMA-weighted long-term interest profile (C.2)

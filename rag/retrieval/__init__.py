@@ -5,6 +5,7 @@ Unified interface (Phase 1):
     document_retriever  : DocumentRetriever (wraps Searcher)
     code_retriever      : CodeRetriever (wraps CodeIndexer)
     hierarchical_code_retriever : HierarchicalCodeRetriever (RepoIndex + CodeRetriever)
+    related_code_retriever : RelatedCodeRetriever (relation-enriched code blocks)
     hybrid_retriever    : HybridRetriever (RRF fusion of multiple retrievers)
 
 Pipeline (Step 1.4):
@@ -20,9 +21,20 @@ Support modules:
 """
 
 from rag.retrieval.base import BaseRetriever, RetrievalResult
+from rag.retrieval.code_block_store import CodeBlockStore
+from rag.retrieval.code_enrichment_pipeline import CodeEnrichmentPipeline
+from rag.retrieval.code_result_filter import CodeResultFilter
+from rag.retrieval.collections import (
+    CODE_BLOCK_COLLECTION,
+    DEFAULT_RAG_COLLECTION,
+    resolve_doc_collection_name,
+    resolve_qa_collection_name,
+)
 from rag.retrieval.document_retriever import DocumentRetriever
 from rag.retrieval.code_retriever import CodeRetriever
 from rag.retrieval.hierarchical_code_retriever import HierarchicalCodeRetriever
+from rag.retrieval.related_code_retriever import RelatedCodeRetriever
+from rag.retrieval.static_document_list import StaticDocumentList
 from rag.retrieval.hybrid_retriever import HybridRetriever
 from rag.retrieval.pipeline import (
     PipelineBuilder,
@@ -34,9 +46,18 @@ from rag.retrieval.pipeline import (
 __all__ = [
     "BaseRetriever",
     "RetrievalResult",
+    "CODE_BLOCK_COLLECTION",
+    "DEFAULT_RAG_COLLECTION",
+    "resolve_doc_collection_name",
+    "resolve_qa_collection_name",
+    "CodeBlockStore",
+    "CodeEnrichmentPipeline",
+    "CodeResultFilter",
     "DocumentRetriever",
     "CodeRetriever",
     "HierarchicalCodeRetriever",
+    "RelatedCodeRetriever",
+    "StaticDocumentList",
     "HybridRetriever",
     "PipelineContext",
     "PipelineStep",

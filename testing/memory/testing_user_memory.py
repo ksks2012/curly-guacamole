@@ -448,16 +448,16 @@ class TestUserMemoryLive(unittest.TestCase):
 
         topics = ["Live Integration Test", "RAG Pipeline", "Python"]
         client.user_memory.update_from_topics(topics)
-        top = client.get_user_interests(10)
+        top = client.user_memory.get_top_interests(10)
         topic_names = [r["topic"] for r in top]
         for t in topics:
             self.assertIn(t, topic_names)
 
-        profile = client.get_user_profile()
+        profile = client.user_memory.get_profile()
         self.assertGreaterEqual(profile.total_topics_seen, 3)
 
         client.timeline.record_activity(["Live Test Topic"], doc_ids=["live-doc"])
-        recent = client.get_timeline_recent(days=1)
+        recent = client.timeline.get_recent(days=1)
         self.assertTrue(any("Live Test Topic" in e["topics"] for e in recent))
 
 

@@ -319,18 +319,19 @@ class TestResearchSessionLive(unittest.TestCase):
         from rag.client import LocalLlamaClient
         client = LocalLlamaClient()
 
-        sess = client.start_research_session("Live Integration Session", tags=["test"])
+        sess = client.research.create("Live Integration Session", tags=["test"])
+        client.research.set_active(sess.session_id)
         self.assertIsNotNone(sess)
 
-        client.add_research_note("Live note from test run", source_doc_ids=[])
-        notes = client.get_research_notes()
+        client.research.add_note("Live note from test run", source_doc_ids=[])
+        notes = client.research.get_notes()
         self.assertTrue(any("Live note" in n.content for n in notes))
 
-        sessions = client.list_research_sessions()
+        sessions = client.research.list_active()
         self.assertTrue(any(s.name == "Live Integration Session" for s in sessions))
 
-        client.archive_research_session()
-        archived = client.list_research_sessions(archived=True)
+        client.research.archive(client.research.active_session_id)
+        archived = client.research.list_archived()
         self.assertTrue(any(s.name == "Live Integration Session" for s in archived))
 
 

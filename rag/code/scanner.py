@@ -33,7 +33,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Collection
+from typing import Collection, Protocol
 
 try:
     import pathspec as _pathspec
@@ -156,20 +156,6 @@ _GENERATED_PATTERNS: tuple[re.Pattern, ...] = tuple(
     ]
 )
 
-# Regex patterns applied to the *relative POSIX path* to detect test files
-_TEST_PATTERNS: tuple[re.Pattern, ...] = tuple(
-    re.compile(p) for p in [
-        r"(^|/)tests?/",
-        r"(^|/)test_[^/]+$",
-        r"(^|/)[^/]+_test\.py$",
-        r"(^|/)spec/",
-        r"(^|/)__tests__/",
-        r"\.test\.(js|ts|jsx|tsx)$",
-        r"\.spec\.(js|ts|jsx|tsx)$",
-    ]
-)
-
-
 def _detect_language(path: Path) -> str:
     """Return the programming language label for *path* (empty string = unknown)."""
     name = path.name.lower()
@@ -184,8 +170,26 @@ def _is_generated(rel_posix: str) -> bool:
     return any(p.search(rel_posix) for p in _GENERATED_PATTERNS)
 
 
-def _is_test(rel_posix: str) -> bool:
-    return any(p.search(rel_posix) for p in _TEST_PATTERNS)
+class _CodeTestFilter(Protocol):
+    def is_test_metadata(self, meta: dict) -> bool:
+        ...
+
+
+_DEFAULT_TEST_FILTER: _CodeTestFilter | None = None
+
+
+def _resolve_default_test_filter() -> _CodeTestFilter:
+    global _DEFAULT_TEST_FILTER
+    if _DEFAULT_TEST_FILTER is None:
+        from rag.retrieval.code_result_filter import CodeResultFilter
+
+        _DEFAULT_TEST_FILTER = CodeResultFilter()
+    return _DEFAULT_TEST_FILTER
+
+
+def _is_test(rel_posix: str, *, code_result_filter: _CodeTestFilter | None = None) -> bool:
+    filter_obj = code_result_filter or _resolve_default_test_filter()
+    return bool(filter_obj.is_test_metadata({"file_path": rel_posix}))
 
 
 def _sha256(path: Path, chunk_size: int = 65536) -> str:
@@ -304,6 +308,7 @@ class RepoScanner:
         extra_extensions: dict[str, str] | None  = None,
         max_file_size:    int = 10 * 1024 * 1024,
         use_gitignore:    bool = True,
+        code_result_filter: _CodeTestFilter | None = None,
     ) -> None:
         self._excluded = _EXCLUDED_DIRS | set(excluded_dirs or [])
         self._ext_lang: dict[str, str] = {
@@ -312,6 +317,7 @@ class RepoScanner:
         }
         self._max_file_size = max_file_size
         self._use_gitignore = use_gitignore
+        self._code_result_filter = code_result_filter or _resolve_default_test_filter()
 
     # ------------------------------------------------------------------
     # Public API
@@ -371,7 +377,7 @@ class RepoScanner:
 
                 language  = _detect_language(abs_path)
                 generated = _is_generated(rel_posix)
-                test      = _is_test(rel_posix)
+                test      = _is_test(rel_posix, code_result_filter=self._code_result_filter)
 
                 # Hash only if file is small enough
                 if stat.st_size <= self._max_file_size:

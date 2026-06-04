@@ -14,8 +14,8 @@ import os
 import re
 
 from rag.ingest.document_ingester import SUPPORTED_EXTENSIONS
+from ui.client_protocols import IndexClientProtocol
 from utils.logger import AppLogger
-from rag.client import LocalLlamaClient
 
 log = AppLogger.get(__name__)
 
@@ -26,7 +26,7 @@ class IndexController:
     # Extensions accepted by the upload widget
     ACCEPTED_EXTENSIONS = SUPPORTED_EXTENSIONS
 
-    def __init__(self, client: LocalLlamaClient) -> None:
+    def __init__(self, client: IndexClientProtocol) -> None:
         self._client = client
         self._last_result: str = ""
         self._last_ok: bool = False
